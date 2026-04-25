@@ -11,6 +11,7 @@ from dpocurv.models.policy import load_policy
 from dpocurv.training.curv_dpo_trainer import train_curv_dpo
 from dpocurv.training.dpo_trainer import train_dpo
 from dpocurv.training.sft_trainer import train_sft
+from dpocurv.utils.artifacts import finalize_run_artifacts, write_error_record, write_run_meta
 from dpocurv.utils.device import configure_torch_for_device, get_device_profile
 from dpocurv.utils.logging import get_logger
 from dpocurv.utils.seed import set_seed
@@ -101,6 +102,7 @@ def main(cfg: DictConfig):
     )
     configure_torch_for_device(profile)
     _flatten_runtime_cfg(cfg, out_dir, profile.device)
+    write_run_meta(cfg, out_dir)
 
     logger.info(f"Work dir: {cfg.out_dir}")
     logger.info(
@@ -114,90 +116,99 @@ def main(cfg: DictConfig):
     
     tracker.init(cfg, out_dir, logger)
 
-    stage = cfg.experiment.stage
-    model_source = cfg.model.name
-    if stage in {"dpo", "dpo_curv"} and cfg.paths.sft_checkpoint:
-        model_source = cfg.paths.sft_checkpoint
-    elif stage in {"dpo", "dpo_curv"}:
-        logger.warning(
-            "No paths.sft_checkpoint provided; training policy from base model with a separate frozen base reference."
-        )
+    failed = False
+    try:
+        stage = cfg.experiment.stage
+        model_source = cfg.model.name
+        if stage in {"dpo", "dpo_curv"} and cfg.paths.sft_checkpoint:
+            model_source = cfg.paths.sft_checkpoint
+        elif stage in {"dpo", "dpo_curv"}:
+            logger.warning(
+                "No paths.sft_checkpoint provided; training policy from base model with a separate frozen base reference."
+            )
 
-    logger.info(f"Loading policy model: {model_source}")
-    model, tokenizer = load_policy(
-        model_source,
-        bf16=cfg.model.bf16,
-        use_flash_attn=cfg.model.use_flash_attn,
-        device=profile.device,
-        profile=profile,
-        gradient_checkpointing=cfg.model.gradient_checkpointing,
-    )
-
-    # 1. Load data
-    logger.info("Loading splits...")
-    splits = get_splits(
-        dataset_name=cfg.data.dataset,
-        sft_size=cfg.data.sft_train_size,
-        dpo_size=cfg.data.dpo_train_size,
-        probe_size=cfg.data.probe_size,
-        oracle_pct=cfg.data.oracle_holdout_pct,
-        seed=cfg.seed
-    )
-
-    # 3. Dispatch Stage
-    logger.info(f"Dispatching stage: {stage}")
-    
-    if stage == "sft":
-        train_sft(
-            model,
-            tokenizer,
-            _tokenize_split(splits["sft"], tokenizer, cfg, stage),
-            cfg,
-            device=cfg.device,
-        )
-    elif stage == "dpo":
-        logger.info(f"Loading frozen reference model: {cfg.model.name}")
-        reference_model, _ = load_policy(
-            cfg.model.name,
+        logger.info(f"Loading policy model: {model_source}")
+        model, tokenizer = load_policy(
+            model_source,
             bf16=cfg.model.bf16,
             use_flash_attn=cfg.model.use_flash_attn,
             device=profile.device,
             profile=profile,
-            gradient_checkpointing=False,
+            gradient_checkpointing=cfg.model.gradient_checkpointing,
         )
-        reference_model.requires_grad_(False)
-        train_dpo(
-            model,
-            reference_model,
-            tokenizer,
-            _tokenize_split(splits["dpo"], tokenizer, cfg, stage),
-            cfg,
-            device=cfg.device,
+
+        logger.info("Loading splits...")
+        splits = get_splits(
+            dataset_name=cfg.data.dataset,
+            sft_size=cfg.data.sft_train_size,
+            dpo_size=cfg.data.dpo_train_size,
+            probe_size=cfg.data.probe_size,
+            oracle_pct=cfg.data.oracle_holdout_pct,
+            seed=cfg.seed
         )
-    elif stage == "dpo_curv":
-        logger.info(f"Loading frozen reference model: {cfg.model.name}")
-        reference_model, _ = load_policy(
-            cfg.model.name,
-            bf16=cfg.model.bf16,
-            use_flash_attn=cfg.model.use_flash_attn,
-            device=profile.device,
-            profile=profile,
-            gradient_checkpointing=False,
-        )
-        reference_model.requires_grad_(False)
-        train_curv_dpo(
-            model,
-            reference_model,
-            tokenizer,
-            _tokenize_split(splits["dpo"], tokenizer, cfg, stage),
-            cfg,
-            device=cfg.device,
-        )
-    else:
-        logger.error(f"Unknown stage: {stage}")
-    
-    tracker.finish()
-    logger.info("Stage execution complete.")
+
+        logger.info(f"Dispatching stage: {stage}")
+        
+        if stage == "sft":
+            train_sft(
+                model,
+                tokenizer,
+                _tokenize_split(splits["sft"], tokenizer, cfg, stage),
+                cfg,
+                device=cfg.device,
+            )
+        elif stage == "dpo":
+            logger.info(f"Loading frozen reference model: {cfg.model.name}")
+            reference_model, _ = load_policy(
+                cfg.model.name,
+                bf16=cfg.model.bf16,
+                use_flash_attn=cfg.model.use_flash_attn,
+                device=profile.device,
+                profile=profile,
+                gradient_checkpointing=False,
+            )
+            reference_model.requires_grad_(False)
+            train_dpo(
+                model,
+                reference_model,
+                tokenizer,
+                _tokenize_split(splits["dpo"], tokenizer, cfg, stage),
+                cfg,
+                device=cfg.device,
+            )
+        elif stage == "dpo_curv":
+            logger.info(f"Loading frozen reference model: {cfg.model.name}")
+            reference_model, _ = load_policy(
+                cfg.model.name,
+                bf16=cfg.model.bf16,
+                use_flash_attn=cfg.model.use_flash_attn,
+                device=profile.device,
+                profile=profile,
+                gradient_checkpointing=False,
+            )
+            reference_model.requires_grad_(False)
+            train_curv_dpo(
+                model,
+                reference_model,
+                tokenizer,
+                _tokenize_split(splits["dpo"], tokenizer, cfg, stage),
+                cfg,
+                device=cfg.device,
+            )
+        else:
+            raise ValueError(f"Unknown stage: {stage}")
+        logger.info("Stage execution complete.")
+    except Exception as exc:
+        failed = True
+        logger.exception("Run failed.")
+        write_error_record(cfg.out_dir, exc)
+        raise
+    finally:
+        try:
+            finalize_run_artifacts(cfg, logger, failed=failed)
+        except Exception:
+            logger.exception("Failed to finalize artifacts.")
+        tracker.finish()
 
 if __name__ == "__main__":
     main()

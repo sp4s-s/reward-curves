@@ -1,7 +1,7 @@
 # Shared defaults. Stage-specific configs overlay on top of this.
 defaults:
-  - experiment: sft
   - _self_
+  - experiment: sft
 
 seed: 20260425
 
@@ -40,6 +40,12 @@ dashboard:
   enabled: true
   update_every: ${training.log_every}
   filename: "run_dashboard.html"
+
+diagnostics:
+  exact_update_norm: true
+  grad_cosine: true
+  final_archive: true
+  archive_name: "run_artifacts.zip"
 
 device: auto
 

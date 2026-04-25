@@ -52,7 +52,7 @@ def _discover_files(out_dir: Path) -> dict[str, list[str]]:
     for path in sorted(out_dir.glob("step-*")):
         if path.is_dir():
             groups["checkpoints"].append(path.name)
-    for name in ["metrics.jsonl", "gpu_metrics.jsonl", "run.log"]:
+    for name in ["train.jsonl", "metrics.jsonl", "gpu_metrics.jsonl", "run.log", "summary.json", "error.json"]:
         if (out_dir / name).exists():
             groups["metrics"].append(name)
     for trace in sorted((out_dir / "torch_traces").glob("*")) if (out_dir / "torch_traces").exists() else []:
@@ -62,12 +62,15 @@ def _discover_files(out_dir: Path) -> dict[str, list[str]]:
 
 def write_dashboard(out_dir: str | Path, filename: str = "run_dashboard.html") -> Path:
     out = Path(out_dir)
-    train_rows = _read_jsonl(out / "metrics.jsonl")
+    train_rows = _read_jsonl(out / "train.jsonl") or _read_jsonl(out / "metrics.jsonl")
     gpu_rows = _read_jsonl(out / "gpu_metrics.jsonl")
     rows = train_rows or gpu_rows
     numeric_keys = _numeric_keys(rows)
     gpu_keys = [k for k in numeric_keys if k.startswith("gpu/")]
-    loss_keys = [k for k in numeric_keys if k in {"loss", "l_dpo", "l_curv", "reward_acc", "grad_norm", "lr"}]
+    loss_keys = [
+        k for k in numeric_keys
+        if k in {"loss", "l_dpo", "l_curv", "reward_acc", "grad_norm/pre_clip", "grad_norm/post_clip", "lr", "dpo/roc_auc", "dpo/error_rate"}
+    ]
     throughput_keys = [k for k in numeric_keys if k.startswith("throughput/") or k.startswith("time/")]
     other_keys = [k for k in numeric_keys if k not in set(gpu_keys + loss_keys + throughput_keys + ["step", "micro_step"])]
     files = _discover_files(out)

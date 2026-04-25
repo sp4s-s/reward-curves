@@ -64,10 +64,14 @@ Every run generates an output directory: `runs/YYYY-MM-DD/HH-MM-SS_<experiment_n
 
 ### Directory Contents:
 - `run.log`: Detailed console logs with timestamps.
-- `metrics.jsonl`: Raw training metrics (loss, reward accuracy, curvature) for every `log_every` steps.
+- `train.jsonl`: Raw training metrics (loss, error, ROC-AUC, reward accuracy, curvature, log-probs, margins, response lengths, gradient norms, parameter/update norms) for every `log_every` steps.
 - `gpu_metrics.jsonl`: Live GPU memory/utilization/throughput telemetry for every logged step.
 - `run_dashboard.html`: Self-contained visual dashboard for loss, reward, curvature, GPU memory, memory divergence, utilization, throughput, and recent metrics.
 - `torch_traces/`: PyTorch profiler traces when `profiler.enabled=true`.
+- `summary.json`: Final latest metrics and artifact inventory.
+- `error.json`: Written if the run fails, with traceback.
+- `run_artifacts.zip`: Kaggle-friendly archive copied to the current working directory as `<run_name>_run_artifacts.zip`.
+- `meta/`: Resolved config, git SHA, and `pip freeze`.
 - `step-XXXXXX/`: Model checkpoints in HuggingFace format.
 - `.hydra/`: Full record of the config and environment used for the run.
 

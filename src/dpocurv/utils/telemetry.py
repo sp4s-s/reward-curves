@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
@@ -91,9 +92,11 @@ class GpuTelemetry:
         self.last_step = step
 
         enriched = dict(metrics)
+        enriched["timestamp_utc"] = datetime.now(timezone.utc).isoformat()
         enriched["time/elapsed_sec"] = elapsed
         enriched["time/steps_per_sec"] = step_delta / step_dt
         enriched["time/sec_per_step"] = step_dt / step_delta
+        enriched["time/step_ms"] = (step_dt / step_delta) * 1000.0
         enriched["micro_step"] = micro_step
         if tokens is not None and step_dt > 0:
             enriched["throughput/tokens_per_sec"] = float(tokens) / step_dt

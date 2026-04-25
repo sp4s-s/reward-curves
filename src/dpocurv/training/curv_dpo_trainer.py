@@ -14,6 +14,13 @@ from dpocurv.training.runtime import (
     move_batch,
     optimizer_step_ready,
 )
+from dpocurv.training.metrics import (
+    clone_trainable_params,
+    dpo_batch_metrics,
+    gradient_cosine,
+    parameter_norm,
+    update_norm,
+)
 from dpocurv.utils.checkpoint import save_checkpoint
 from dpocurv.utils.dashboard import DashboardWriter
 from dpocurv.utils.logging import get_logger, JsonlMetricWriter
@@ -50,7 +57,7 @@ def train_curv_dpo(
     
     with (
         GpuTelemetry(cfg, logger, device) as telemetry,
-        JsonlMetricWriter(f"{cfg.out_dir}/metrics.jsonl") as writer,
+        JsonlMetricWriter(f"{cfg.out_dir}/train.jsonl") as writer,
         profiler_context(cfg, cfg.out_dir) as prof,
     ):
         pbar = tqdm(total=total_optimizer_steps, desc="Curv-DPO")
@@ -60,8 +67,8 @@ def train_curv_dpo(
                 if optimizer_step >= total_optimizer_steps:
                     break
                 
-                batch = move_batch(batch, device)
                 tokens = count_tokens(batch)
+                batch = move_batch(batch, device)
                 
                 with autocast_context(policy, device):
                     with torch.no_grad():
@@ -111,32 +118,62 @@ def train_curv_dpo(
                     raw_loss = l_dpo + cfg.curv_lambda * l_curv
                     loss = raw_loss / cfg.grad_accum
 
+                next_micro_step = micro_step + 1
+                will_update = optimizer_step_ready(next_micro_step, int(cfg.grad_accum))
+                next_step = optimizer_step + 1 if will_update else optimizer_step
+                will_log = will_update and (next_step == 1 or next_step % cfg.log_every == 0)
+                grad_cos = (
+                    gradient_cosine(l_dpo, l_curv, policy)
+                    if will_log and cfg.diagnostics.grad_cosine
+                    else None
+                )
+
                 loss.backward()
-                micro_step += 1
+                micro_step = next_micro_step
                 
                 if not optimizer_step_ready(micro_step, int(cfg.grad_accum)):
                     continue
 
-                grad_norm = torch.nn.utils.clip_grad_norm_(policy.parameters(), cfg.grad_clip)
+                before_params = clone_trainable_params(policy) if will_log and cfg.diagnostics.exact_update_norm else None
+                pre_clip_grad_norm = torch.nn.utils.clip_grad_norm_(policy.parameters(), cfg.grad_clip)
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
-                optimizer_step += 1
+                optimizer_step = next_step
                 pbar.update(1)
                 
-                if optimizer_step == 1 or optimizer_step % cfg.log_every == 0:
+                if will_log:
+                    extra = dpo_batch_metrics(
+                        policy_chosen_logps,
+                        policy_rejected_logps,
+                        ref_chosen_logps,
+                        ref_rejected_logps,
+                        batch["chosen_labels"],
+                        batch["rejected_labels"],
+                        cfg.beta,
+                    )
+                    upd_norm = update_norm(before_params, policy)
                     metrics = {
                         "step": optimizer_step,
+                        "epoch": float(micro_step / max(len(train_loader), 1)),
                         "micro_step": micro_step,
                         "loss": raw_loss.item(),
                         "l_dpo": l_dpo.item(),
                         "l_curv": l_curv.item(),
+                        "grad_cosine/dpo_curv": grad_cos,
                         "reward_acc": acc.item(),
+                        "accuracy": acc.item(),
+                        "error_rate": 1.0 - acc.item(),
                         "chosen_reward": c_rew.mean().item(),
                         "rejected_reward": r_rew.mean().item(),
-                        "grad_norm": float(grad_norm),
+                        "reward_margin": (c_rew - r_rew).mean().item(),
+                        "grad_norm/pre_clip": float(pre_clip_grad_norm),
+                        "grad_norm/post_clip": float(min(float(pre_clip_grad_norm), float(cfg.grad_clip))),
+                        "param_norm": parameter_norm(policy),
+                        "update_norm": upd_norm,
                         "lr": scheduler.get_last_lr()[0],
                     }
+                    metrics.update(extra)
                     metrics = telemetry.capture(metrics, optimizer_step, micro_step, tokens=tokens)
                     writer.write(metrics)
                     telemetry.write(metrics)

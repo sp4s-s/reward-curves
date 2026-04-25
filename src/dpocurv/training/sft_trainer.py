@@ -13,6 +13,7 @@ from dpocurv.training.runtime import (
     move_batch,
     optimizer_step_ready,
 )
+from dpocurv.training.metrics import clone_trainable_params, parameter_norm, update_norm
 from dpocurv.utils.checkpoint import save_checkpoint
 from dpocurv.utils.dashboard import DashboardWriter
 from dpocurv.utils.logging import get_logger, JsonlMetricWriter
@@ -47,7 +48,7 @@ def train_sft(
     
     with (
         GpuTelemetry(cfg, logger, device) as telemetry,
-        JsonlMetricWriter(f"{cfg.out_dir}/metrics.jsonl") as writer,
+        JsonlMetricWriter(f"{cfg.out_dir}/train.jsonl") as writer,
         profiler_context(cfg, cfg.out_dir) as prof,
     ):
         pbar = tqdm(total=total_optimizer_steps, desc="SFT")
@@ -57,8 +58,8 @@ def train_sft(
                 if optimizer_step >= total_optimizer_steps:
                     break
                 
-                batch = move_batch(batch, device)
                 tokens = count_tokens(batch)
+                batch = move_batch(batch, device)
                 with autocast_context(model, device):
                     outputs = model(**batch)
                     raw_loss = outputs.loss
@@ -69,19 +70,27 @@ def train_sft(
                 if not optimizer_step_ready(micro_step, int(cfg.grad_accum)):
                     continue
 
-                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
+                next_step = optimizer_step + 1
+                will_log = next_step == 1 or next_step % cfg.log_every == 0
+                before_params = clone_trainable_params(model) if will_log and cfg.diagnostics.exact_update_norm else None
+                pre_clip_grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
-                optimizer_step += 1
+                optimizer_step = next_step
                 pbar.update(1)
 
-                if optimizer_step == 1 or optimizer_step % cfg.log_every == 0:
+                if will_log:
+                    upd_norm = update_norm(before_params, model)
                     metrics = {
                         "step": optimizer_step,
+                        "epoch": float(micro_step / max(len(train_loader), 1)),
                         "micro_step": micro_step,
                         "loss": raw_loss.item(),
-                        "grad_norm": float(grad_norm),
+                        "grad_norm/pre_clip": float(pre_clip_grad_norm),
+                        "grad_norm/post_clip": float(min(float(pre_clip_grad_norm), float(cfg.grad_clip))),
+                        "param_norm": parameter_norm(model),
+                        "update_norm": upd_norm,
                         "lr": scheduler.get_last_lr()[0],
                     }
                     metrics = telemetry.capture(metrics, optimizer_step, micro_step, tokens=tokens)

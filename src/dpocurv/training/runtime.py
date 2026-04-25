@@ -52,7 +52,12 @@ def count_tokens(batch: dict[str, torch.Tensor]) -> int:
     total = 0
     for key, value in batch.items():
         if key.endswith("attention_mask"):
-            total += int(value.sum().item())
+            if value.device.type == "cuda":
+                # Telemetry must never launch an extra CUDA reduction; on some Kaggle
+                # images old GPUs fail here before the real forward pass starts.
+                total += int(value.numel())
+            else:
+                total += int(value.sum().item())
     return total
 
 
