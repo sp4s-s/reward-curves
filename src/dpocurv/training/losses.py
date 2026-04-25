@@ -52,6 +52,9 @@ def curvature_loss(
     reference_model,
     input_ids: torch.Tensor,
     labels: torch.Tensor,
+    pi_logps_base: torch.Tensor,
+    ref_logps_base: torch.Tensor,
+    ref_logits: torch.Tensor,
     beta: float = 0.1,
     n_positions: int = 2,
     n_swaps: int = 2,
@@ -64,16 +67,6 @@ def curvature_loss(
     """
     batch_size, seq_len = input_ids.shape
     
-    # Calculate base implicit rewards for the chosen completions
-    policy_logits = policy(input_ids).logits
-    with torch.no_grad():
-        ref_logits = reference_model(input_ids).logits
-    
-    # We need the logprobs per token to calculate the "local" reward change
-    # or just the aggregate reward change. The spec says r_theta(x, swap(y)) - r_theta(x, y).
-    
-    pi_logps_base = compute_logprobs(policy_logits, labels)
-    ref_logps_base = compute_logprobs(ref_logits, labels)
     r_base = beta * (pi_logps_base - ref_logps_base)
     
     total_curv_loss = 0.0

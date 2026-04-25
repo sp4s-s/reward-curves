@@ -75,25 +75,29 @@ def train_dpo(
                             input_ids=batch["chosen_input_ids"],
                             attention_mask=batch["chosen_attention_mask"],
                         ).logits
+                        ref_chosen_logps = compute_logprobs(ref_chosen_logits, batch["chosen_labels"])
+                        del ref_chosen_logits
+                        
                         ref_rejected_logits = reference_model(
                             input_ids=batch["rejected_input_ids"],
                             attention_mask=batch["rejected_attention_mask"],
                         ).logits
-                        
-                        ref_chosen_logps = compute_logprobs(ref_chosen_logits, batch["chosen_labels"])
                         ref_rejected_logps = compute_logprobs(ref_rejected_logits, batch["rejected_labels"])
+                        del ref_rejected_logits
 
                     policy_chosen_logits = policy(
                         input_ids=batch["chosen_input_ids"],
                         attention_mask=batch["chosen_attention_mask"],
                     ).logits
+                    policy_chosen_logps = compute_logprobs(policy_chosen_logits, batch["chosen_labels"])
+                    del policy_chosen_logits
+
                     policy_rejected_logits = policy(
                         input_ids=batch["rejected_input_ids"],
                         attention_mask=batch["rejected_attention_mask"],
                     ).logits
-                    
-                    policy_chosen_logps = compute_logprobs(policy_chosen_logits, batch["chosen_labels"])
                     policy_rejected_logps = compute_logprobs(policy_rejected_logits, batch["rejected_labels"])
+                    del policy_rejected_logits
                     
                     raw_loss, c_rew, r_rew, acc = dpo_loss(
                         policy_chosen_logps,

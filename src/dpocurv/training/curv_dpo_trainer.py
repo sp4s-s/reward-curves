@@ -76,25 +76,31 @@ def train_curv_dpo(
                             input_ids=batch["chosen_input_ids"],
                             attention_mask=batch["chosen_attention_mask"],
                         ).logits
+                        ref_chosen_logps = compute_logprobs(ref_chosen_logits, batch["chosen_labels"])
+                        
                         ref_rejected_logits = reference_model(
                             input_ids=batch["rejected_input_ids"],
                             attention_mask=batch["rejected_attention_mask"],
                         ).logits
-                        
-                        ref_chosen_logps = compute_logprobs(ref_chosen_logits, batch["chosen_labels"])
                         ref_rejected_logps = compute_logprobs(ref_rejected_logits, batch["rejected_labels"])
+                        # Free rejected logits immediately as we only need chosen logits for curvature_loss
+                        del ref_rejected_logits
 
                     policy_chosen_logits = policy(
                         input_ids=batch["chosen_input_ids"],
                         attention_mask=batch["chosen_attention_mask"],
                     ).logits
+                    policy_chosen_logps = compute_logprobs(policy_chosen_logits, batch["chosen_labels"])
+                    # Free memory immediately
+                    del policy_chosen_logits
+
                     policy_rejected_logits = policy(
                         input_ids=batch["rejected_input_ids"],
                         attention_mask=batch["rejected_attention_mask"],
                     ).logits
-                    
-                    policy_chosen_logps = compute_logprobs(policy_chosen_logits, batch["chosen_labels"])
                     policy_rejected_logps = compute_logprobs(policy_rejected_logits, batch["rejected_labels"])
+                    # Free memory immediately
+                    del policy_rejected_logits
                     
                     l_dpo, c_rew, r_rew, acc = dpo_loss(
                         policy_chosen_logps,
@@ -109,12 +115,18 @@ def train_curv_dpo(
                         reference_model,
                         batch["chosen_input_ids"],
                         batch["chosen_labels"],
+                        pi_logps_base=policy_chosen_logps,
+                        ref_logps_base=ref_chosen_logps,
+                        ref_logits=ref_chosen_logits,
                         beta=cfg.beta,
                         n_positions=cfg.curv_n_positions,
                         n_swaps=cfg.curv_n_swaps,
                         swap_topk=cfg.curv_swap_topk,
                         device=device,
                     )
+                    # Free the final logits tensor
+                    del ref_chosen_logits
+
                     raw_loss = l_dpo + cfg.curv_lambda * l_curv
                     loss = raw_loss / cfg.grad_accum
 
