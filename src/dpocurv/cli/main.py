@@ -7,12 +7,12 @@ from omegaconf import DictConfig, open_dict
 
 from dpocurv.data.ultrafeedback import as_text, response_text, tokenize_dpo_pair, tokenize_sft_item
 from dpocurv.data.splits import get_splits
-from dpocurv.models.policy import load_policy
+from dpocurv.models.policy import load_policy, reference_device
 from dpocurv.training.curv_dpo_trainer import train_curv_dpo
 from dpocurv.training.dpo_trainer import train_dpo
 from dpocurv.training.sft_trainer import train_sft
 from dpocurv.utils.artifacts import finalize_run_artifacts, write_error_record, write_run_meta
-from dpocurv.utils.device import configure_torch_for_device, get_device_profile
+from dpocurv.utils.device import configure_torch_for_device, get_device_profile, gpu_topology_info
 from dpocurv.utils.logging import get_logger
 from dpocurv.utils.seed import set_seed
 from dpocurv.utils.tracking import tracker
@@ -112,6 +112,7 @@ def main(cfg: DictConfig):
         profile.dtype_name,
         profile.attn_implementation or "sdpa/eager",
     )
+    logger.info(gpu_topology_info())
     set_seed(cfg.seed)
     
     tracker.init(cfg, out_dir, logger)
@@ -158,13 +159,14 @@ def main(cfg: DictConfig):
                 device=cfg.device,
             )
         elif stage == "dpo":
-            logger.info(f"Loading frozen reference model: {cfg.model.name}")
+            ref_dev = reference_device()
+            logger.info(f"Loading frozen reference model: {cfg.model.name} (device={ref_dev})")
             reference_model, _ = load_policy(
                 cfg.model.name,
                 bf16=cfg.model.bf16,
                 use_flash_attn=cfg.model.use_flash_attn,
-                device=profile.device,
-                profile=profile,
+                device=ref_dev,
+                profile=get_device_profile(ref_dev, cfg.model.bf16, cfg.model.use_flash_attn),
                 gradient_checkpointing=False,
             )
             reference_model.requires_grad_(False)
@@ -175,15 +177,17 @@ def main(cfg: DictConfig):
                 _tokenize_split(splits["dpo"], tokenizer, cfg, stage),
                 cfg,
                 device=cfg.device,
+                ref_device=ref_dev,
             )
         elif stage == "dpo_curv":
-            logger.info(f"Loading frozen reference model: {cfg.model.name}")
+            ref_dev = reference_device()
+            logger.info(f"Loading frozen reference model: {cfg.model.name} (device={ref_dev})")
             reference_model, _ = load_policy(
                 cfg.model.name,
                 bf16=cfg.model.bf16,
                 use_flash_attn=cfg.model.use_flash_attn,
-                device=profile.device,
-                profile=profile,
+                device=ref_dev,
+                profile=get_device_profile(ref_dev, cfg.model.bf16, cfg.model.use_flash_attn),
                 gradient_checkpointing=False,
             )
             reference_model.requires_grad_(False)
@@ -194,7 +198,9 @@ def main(cfg: DictConfig):
                 _tokenize_split(splits["dpo"], tokenizer, cfg, stage),
                 cfg,
                 device=cfg.device,
+                ref_device=ref_dev,
             )
+
         else:
             raise ValueError(f"Unknown stage: {stage}")
         logger.info("Stage execution complete.")

@@ -1,6 +1,7 @@
-"""Hardware-aware CUDA defaults for single-GPU runs."""
+"""Hardware-aware CUDA defaults for single-GPU and multi-GPU runs."""
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from importlib.util import find_spec
 from typing import Optional
@@ -75,6 +76,9 @@ def get_device_profile(
 def configure_torch_for_device(profile: DeviceProfile) -> None:
     if not profile.device.startswith("cuda"):
         return
+    # Enable the expandable-segments allocator to reduce fragmentation.
+    # Must be set before the first CUDA allocation; setdefault is safe.
+    os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
     if not profile.torch_supports_arch:
         arch = f"sm_{profile.capability[0]}{profile.capability[1]}" if profile.capability else "unknown"
         supported = ", ".join(getattr(torch.cuda, "get_arch_list", lambda: [])())
@@ -90,4 +94,27 @@ def configure_torch_for_device(profile: DeviceProfile) -> None:
         torch.set_float32_matmul_precision("high")
 
 
-__all__ = ["DeviceProfile", "configure_torch_for_device", "get_device_profile", "resolve_device"]
+def gpu_topology_info() -> str:
+    """Human-readable summary of available GPUs."""
+    n = torch.cuda.device_count()
+    if n == 0:
+        return "No CUDA GPUs detected"
+    lines = [f"{n} GPU(s) detected:"]
+    for i in range(n):
+        props = torch.cuda.get_device_properties(i)
+        total_gb = props.total_memory / 1024 ** 3
+        lines.append(f"  [{i}] {props.name} — {total_gb:.1f} GiB")
+    if n > 1:
+        lines.append("  → Model-parallel: policy=cuda:0, reference=cuda:1")
+    else:
+        lines.append("  → Single-GPU: policy + reference share cuda:0")
+    return "\n".join(lines)
+
+
+__all__ = [
+    "DeviceProfile",
+    "configure_torch_for_device",
+    "get_device_profile",
+    "gpu_topology_info",
+    "resolve_device",
+]

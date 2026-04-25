@@ -59,52 +59,53 @@ def curvature_loss(
     n_positions: int = 2,
     n_swaps: int = 2,
     swap_topk: int = 50,
-    device: str = "cuda"
+    device: str = "cuda",
+    ref_device: str | None = None,
 ):
     """
     In-loop curvature regularizer.
     Samples swaps for the 'chosen' completion and penalizes squared implicit-reward changes.
     """
+    ref_device = ref_device or device
     batch_size, seq_len = input_ids.shape
-    
+
     r_base = beta * (pi_logps_base - ref_logps_base)
-    
+
     total_curv_loss = 0.0
     count = 0
-    
-    # For simplicity and to avoid too many forwards, we sample 1 position and 1 swap per batch element
-    # for the regularizer, or iterate a small number.
+
     for _ in range(n_positions):
         for _ in range(n_swaps):
-            # Sample a position in each response (masking prompt)
-            # labels != -100 is the response
-            # This is a bit tricky to vectorize efficiently without custom kernels
-            # but we'll do it per-batch element for clarity.
-            
             swapped_input_ids = input_ids.clone()
             swapped_labels = labels.clone()
             for b in range(batch_size):
                 resp_indices = (labels[b] != -100).nonzero(as_tuple=True)[0]
-                if len(resp_indices) == 0: continue
+                if len(resp_indices) == 0:
+                    continue
                 pos = resp_indices[torch.randint(0, len(resp_indices), (1,)).item()]
-                
-                # Sample swap token from top-k of ref_model
-                # To avoid extra forwards, we use the logits we already have
+
+                # Sample swap token from top-k of ref_model logits (already on ref_device)
                 k = min(swap_topk, ref_logits.size(-1))
                 logits_pos = max(int(pos.item()) - 1, 0)
                 topk_indices = torch.topk(ref_logits[b, logits_pos, :], k).indices
                 swap_token = topk_indices[torch.randint(0, k, (1,)).item()]
-                swapped_input_ids[b, pos] = swap_token
-                swapped_labels[b, pos] = swap_token
-            
-            # Forward on swapped batch
-            pi_logps_swapped = compute_logprobs(policy(swapped_input_ids).logits, swapped_labels)
-            # Ref model is frozen, but we still need its logps for the swapped sequence
+                swapped_input_ids[b, pos] = swap_token.to(device)
+                swapped_labels[b, pos] = swap_token.to(device)
+
+            # Policy forward on device (cuda:0)
+            pi_logps_swapped = compute_logprobs(
+                policy(swapped_input_ids).logits,
+                swapped_labels,
+            )
+            # Reference forward on ref_device (cuda:1 if 2xT4), result moved back
             with torch.no_grad():
-                ref_logps_swapped = compute_logprobs(reference_model(swapped_input_ids).logits, swapped_labels)
-            
+                ref_logps_swapped = compute_logprobs(
+                    reference_model(swapped_input_ids.to(ref_device)).logits,
+                    swapped_labels.to(ref_device),
+                ).to(device)
+
             r_swapped = beta * (pi_logps_swapped - ref_logps_swapped)
             total_curv_loss += (r_swapped - r_base).pow(2).mean()
             count += 1
-            
-    return total_curv_loss / count if count > 0 else torch.tensor(0.0).to(device)
+
+    return total_curv_loss / count if count > 0 else torch.tensor(0.0, device=device)

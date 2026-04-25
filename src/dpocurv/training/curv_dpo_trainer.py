@@ -34,10 +34,14 @@ def train_curv_dpo(
     tokenizer,
     train_dataset,
     cfg,
-    device="cuda"
+    device="cuda",
+    ref_device: str | None = None,
 ):
     logger = get_logger("dpocurv.curv_dpo")
     logger.info(f"Starting Curvature-Regularized DPO: {cfg.run_name} (lambda={cfg.curv_lambda})")
+    ref_device = ref_device or device
+    if ref_device != device:
+        logger.info(f"Model-parallel split: policy={device}, reference={ref_device}")
     
     train_loader = create_train_loader(train_dataset, cfg)
     optimizer = AdamW(policy.parameters(), lr=cfg.lr, weight_decay=0.0)
@@ -72,18 +76,25 @@ def train_curv_dpo(
                 
                 with autocast_context(policy, device):
                     with torch.no_grad():
+                        # Route reference forwards through ref_device (cuda:1 if 2xT4)
                         ref_chosen_logits = reference_model(
-                            input_ids=batch["chosen_input_ids"],
-                            attention_mask=batch["chosen_attention_mask"],
+                            input_ids=batch["chosen_input_ids"].to(ref_device),
+                            attention_mask=batch["chosen_attention_mask"].to(ref_device),
                         ).logits
-                        ref_chosen_logps = compute_logprobs(ref_chosen_logits, batch["chosen_labels"])
-                        
+                        ref_chosen_logps = compute_logprobs(
+                            ref_chosen_logits,
+                            batch["chosen_labels"].to(ref_device),
+                        ).to(device)
+                        # Keep ref_chosen_logits on ref_device for curvature swap sampling
+
                         ref_rejected_logits = reference_model(
-                            input_ids=batch["rejected_input_ids"],
-                            attention_mask=batch["rejected_attention_mask"],
+                            input_ids=batch["rejected_input_ids"].to(ref_device),
+                            attention_mask=batch["rejected_attention_mask"].to(ref_device),
                         ).logits
-                        ref_rejected_logps = compute_logprobs(ref_rejected_logits, batch["rejected_labels"])
-                        # Free rejected logits immediately as we only need chosen logits for curvature_loss
+                        ref_rejected_logps = compute_logprobs(
+                            ref_rejected_logits,
+                            batch["rejected_labels"].to(ref_device),
+                        ).to(device)
                         del ref_rejected_logits
 
                     policy_chosen_logits = policy(
@@ -123,6 +134,7 @@ def train_curv_dpo(
                         n_swaps=cfg.curv_n_swaps,
                         swap_topk=cfg.curv_swap_topk,
                         device=device,
+                        ref_device=ref_device,
                     )
                     # Free the final logits tensor
                     del ref_chosen_logits
