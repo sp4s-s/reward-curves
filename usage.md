@@ -51,6 +51,12 @@ python src/dpocurv/cli/main.py experiment=dpo_curv wandb.enabled=false
 !python src/dpocurv/cli/main.py experiment=dpo_curv profiler.enabled=true wandb.enabled=false
 ```
 
+If Kaggle assigns a P100 and PyTorch reports `sm_60` is unsupported, first run:
+```bash
+python scripts/kaggle_prepare_gpu.py --install
+```
+Then rerun the training command in the next cell/process.
+
 With W&B:
 ```bash
 python src/dpocurv/cli/main.py experiment=dpo_curv wandb.enabled=true

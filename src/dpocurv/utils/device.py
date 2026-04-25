@@ -81,7 +81,8 @@ def configure_torch_for_device(profile: DeviceProfile) -> None:
         raise RuntimeError(
             f"Your installed PyTorch CUDA build does not include kernels for {profile.name} ({arch}). "
             f"Supported arch list: {supported or 'unknown'}. On Kaggle, switch accelerator "
-            "to T4/V100/H100 if available, or install a PyTorch build that supports this GPU."
+            "to T4/V100/H100 if available, or run "
+            "`!python scripts/kaggle_prepare_gpu.py --install` before training on P100."
         )
     torch.backends.cuda.matmul.allow_tf32 = profile.tf32
     torch.backends.cudnn.allow_tf32 = profile.tf32
