@@ -14,17 +14,15 @@ def compute_logprobs(logits, labels):
     shift_logits = logits[..., :-1, :].contiguous()
     shift_labels = labels[..., 1:].contiguous()
     
-    # Compute log-probs
-    log_probs = F.log_softmax(shift_logits, dim=-1, dtype=torch.float32)
-    
-    mask = (shift_labels != -100)
-    safe_labels = shift_labels.masked_fill(~mask, 0)
-    per_token_logps = torch.gather(
-        log_probs,
-        dim=-1,
-        index=safe_labels.unsqueeze(-1),
-    ).squeeze(-1)
-    return (per_token_logps * mask).sum(-1)
+    # Compute log-probs memory efficiently using cross_entropy
+    loss = F.cross_entropy(
+        shift_logits.view(-1, shift_logits.size(-1)),
+        shift_labels.view(-1),
+        ignore_index=-100,
+        reduction="none",
+    )
+    loss = loss.view(shift_labels.shape)
+    return -loss.sum(-1)
 
 
 def dpo_loss(
@@ -74,17 +72,8 @@ def curvature_loss(
     # We need the logprobs per token to calculate the "local" reward change
     # or just the aggregate reward change. The spec says r_theta(x, swap(y)) - r_theta(x, y).
     
-    def get_batch_logps(logits, labels):
-        shift_logits = logits[..., :-1, :].contiguous()
-        shift_labels = labels[..., 1:].contiguous()
-        lp = F.log_softmax(shift_logits, dim=-1, dtype=torch.float32)
-        mask = (shift_labels != -100)
-        safe_labels = shift_labels.masked_fill(~mask, 0)
-        per_token_lp = torch.gather(lp, dim=-1, index=safe_labels.unsqueeze(-1)).squeeze(-1)
-        return (per_token_lp * mask).sum(-1)
-
-    pi_logps_base = get_batch_logps(policy_logits, labels)
-    ref_logps_base = get_batch_logps(ref_logits, labels)
+    pi_logps_base = compute_logprobs(policy_logits, labels)
+    ref_logps_base = compute_logprobs(ref_logits, labels)
     r_base = beta * (pi_logps_base - ref_logps_base)
     
     total_curv_loss = 0.0
@@ -116,10 +105,10 @@ def curvature_loss(
                 swapped_labels[b, pos] = swap_token
             
             # Forward on swapped batch
-            pi_logps_swapped = get_batch_logps(policy(swapped_input_ids).logits, swapped_labels)
+            pi_logps_swapped = compute_logprobs(policy(swapped_input_ids).logits, swapped_labels)
             # Ref model is frozen, but we still need its logps for the swapped sequence
             with torch.no_grad():
-                ref_logps_swapped = get_batch_logps(reference_model(swapped_input_ids).logits, swapped_labels)
+                ref_logps_swapped = compute_logprobs(reference_model(swapped_input_ids).logits, swapped_labels)
             
             r_swapped = beta * (pi_logps_swapped - ref_logps_swapped)
             total_curv_loss += (r_swapped - r_base).pow(2).mean()

@@ -7,6 +7,34 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from dpocurv.utils.device import DeviceProfile, get_device_profile
 
 
+class DPWrapper(torch.nn.Module):
+    """Wrapper to support DataParallel while returning .logits for compatibility."""
+    def __init__(self, model):
+        super().__init__()
+        self.module = model
+        self.dp = torch.nn.DataParallel(model)
+        self.config = model.config
+
+    def forward(self, *args, **kwargs):
+        kwargs["return_dict"] = False
+        out = self.dp(*args, **kwargs)
+        class Output:
+            pass
+        ret = Output()
+        ret.logits = out[0]
+        return ret
+        
+    def parameters(self, recurse=True):
+        return self.module.parameters(recurse)
+        
+    def requires_grad_(self, requires_grad=True):
+        self.module.requires_grad_(requires_grad)
+        return self
+        
+    def save_pretrained(self, *args, **kwargs):
+        return self.module.save_pretrained(*args, **kwargs)
+
+
 def load_policy(
     model_name: str,
     bf16: bool = True,
@@ -42,4 +70,8 @@ def load_policy(
         model.gradient_checkpointing_enable()
     if gradient_checkpointing and hasattr(model.config, "use_cache"):
         model.config.use_cache = False
+        
+    if torch.cuda.device_count() > 1:
+        model = DPWrapper(model)
+        
     return model, tokenizer
