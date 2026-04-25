@@ -1,0 +1,6 @@
+name: "EleutherAI/pythia-410m"
+revision: "main"
+trust_remote_code: true
+torch_dtype: "bfloat16"
+use_flash_attn: true
+gradient_checkpointing: true

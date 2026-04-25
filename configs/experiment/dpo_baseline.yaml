@@ -1,0 +1,12 @@
+# @package _global_
+experiment:
+  name: "dpo_baseline"
+  stage: "dpo"
+
+training:
+  lr: 5e-7
+  total_steps: 4000
+  save_every: 250
+
+curvature:
+  lambda: 0.0

@@ -1,0 +1,49 @@
+[project]
+name = "dpocurv"
+version = "0.1.0"
+description = "Implicit-reward curvature predicts DPO overoptimization."
+requires-python = ">=3.10"
+authors = [{ name = "Rishav", email = "anubrat23@gmail.com" }]
+license = { text = "MIT" }
+readme = "README.md"
+
+# Runtime deps are pinned in environment.yml; pyproject keeps them light
+# so `pip install -e .` does not attempt to reinstall torch, etc.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.7", "black>=24"]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B", "SIM"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short --strict-markers"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::FutureWarning",
+]

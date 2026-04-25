@@ -1,0 +1,9 @@
+# @package _global_
+experiment:
+  name: "sft_baseline"
+  stage: "sft"
+
+training:
+  lr: 1e-5
+  total_steps: 250
+  save_every: 250

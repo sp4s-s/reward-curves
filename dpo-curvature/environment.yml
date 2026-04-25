@@ -1,0 +1,36 @@
+# Conda environment for the DPO-curvature project.
+# Create:   conda env create -f environment.yml
+# Activate: conda activate dpocurv
+# Update:   conda env update -f environment.yml --prune
+name: dpocurv
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - git
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cu121
+      - torch==2.4.0
+      - transformers==4.46.0
+      - accelerate==1.1.0
+      - datasets==3.0.1
+      - peft==0.13.2
+      - bitsandbytes==0.44.1
+      - safetensors==0.4.5
+      - sentencepiece==0.2.0
+      - tokenizers==0.20.1
+      - omegaconf==2.3.0
+      - pyyaml==6.0.2
+      - tqdm==4.66.5
+      - "numpy<2.0"
+      - pandas==2.2.3
+      - scipy==1.14.1
+      - scikit-learn==1.5.2
+      - matplotlib==3.9.2
+      - seaborn==0.13.2
+      - rich==13.9.4
+      - wandb==0.18.5
+      - pytest==8.3.3
+      - ruff==0.7.1
+      - black==24.10.0

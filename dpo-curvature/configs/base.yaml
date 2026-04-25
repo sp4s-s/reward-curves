@@ -1,0 +1,45 @@
+# Shared defaults. Stage-specific configs (sft.yaml, dpo_baseline.yaml, ...)
+# overlay on top of this via dpocurv.utils.io.load_layered_yaml.
+
+seed: 20260425
+
+model:
+  name: "EleutherAI/pythia-410m-deduped"
+  max_seq_len: 512
+  bf16: true
+
+data:
+  dataset: "HuggingFaceH4/ultrafeedback_binarized"
+  sft_train_size: 8000
+  dpo_train_size: 16000
+  probe_size: 512
+  pref_eval_size: 2000
+  gen_eval_size: 1000
+  min_response_tokens: 4
+  max_response_tokens: 256
+
+training:
+  micro_batch_size: 8
+  grad_accum: 2
+  lr: 5.0e-7
+  warmup_steps: 50
+  total_steps: 4000
+  save_every: 250
+  log_every: 10
+  beta: 0.1
+  grad_clip: 1.0
+
+curvature:
+  lambda: 0.0
+  n_positions: 2
+  n_swaps: 2
+  swap_topk: 50
+  swap_distribution: "Q_topk"   # one of: Q_topk, Q_unif, Q_rand-id
+
+gold_rm:
+  source: "external"             # external | self_trained
+  external_name: "OpenAssistant/reward-model-deberta-v3-large-v2"
+
+paths:
+  out_root: "runs"
+  data_cache: "data/cache"

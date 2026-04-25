@@ -1,0 +1,28 @@
+name: implicit_rl
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pytorch
+  - torchvision
+  - torchaudio
+  - pytorch-cuda=12.1
+  - pip
+  - pip:
+      - transformers
+      - datasets
+      - accelerate
+      - triton
+      - ray[train,tune,serve]
+      - wandb
+      - hydra-core
+      - omegaconf
+      - modal
+      - flash-attn
+      - einops
+      - sentencepiece
+      - bitsandbytes
+      - peft
+      - trl
