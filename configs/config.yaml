@@ -19,6 +19,28 @@ wandb:
   group: null
   mode: "online" # online, offline, disabled
 
+telemetry:
+  enabled: true
+  log_every: ${training.log_every}
+  show_gpu_memory: true
+  show_nvml: true
+
+profiler:
+  enabled: false
+  trace_dir: "torch_traces"
+  wait: 5
+  warmup: 2
+  active: 3
+  repeat: 1
+  profile_memory: true
+  record_shapes: false
+  with_stack: false
+
+dashboard:
+  enabled: true
+  update_every: ${training.log_every}
+  filename: "run_dashboard.html"
+
 device: auto
 
 data:

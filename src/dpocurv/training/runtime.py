@@ -48,4 +48,12 @@ def optimizer_step_ready(micro_step: int, grad_accum: int) -> bool:
     return micro_step > 0 and micro_step % grad_accum == 0
 
 
-__all__ = ["autocast_context", "create_train_loader", "move_batch", "optimizer_step_ready"]
+def count_tokens(batch: dict[str, torch.Tensor]) -> int:
+    total = 0
+    for key, value in batch.items():
+        if key.endswith("attention_mask"):
+            total += int(value.sum().item())
+    return total
+
+
+__all__ = ["autocast_context", "count_tokens", "create_train_loader", "move_batch", "optimizer_step_ready"]

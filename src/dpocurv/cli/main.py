@@ -14,9 +14,7 @@ from dpocurv.training.sft_trainer import train_sft
 from dpocurv.utils.device import configure_torch_for_device, get_device_profile
 from dpocurv.utils.logging import get_logger
 from dpocurv.utils.seed import set_seed
-
-import wandb
-from omegaconf import OmegaConf
+from dpocurv.utils.tracking import tracker
 
 
 def _flatten_runtime_cfg(cfg: DictConfig, out_dir: Path, device: str) -> None:
@@ -49,11 +47,6 @@ def _validate_cfg(cfg: DictConfig) -> None:
         raise ValueError(f"Config values must be positive integers: {', '.join(bad)}")
     if not 0.0 < float(cfg.data.oracle_holdout_pct) < 1.0:
         raise ValueError("data.oracle_holdout_pct must be in (0, 1)")
-    if cfg.experiment.stage in {"dpo", "dpo_curv"} and not cfg.paths.sft_checkpoint:
-        raise ValueError(
-            "DPO stages require paths.sft_checkpoint=/path/to/sft/checkpoint "
-            "so the policy and frozen reference are not accidentally identical."
-        )
 
 
 def _tokenize_split(ds, tokenizer, cfg: DictConfig, stage: str):
@@ -119,21 +112,16 @@ def main(cfg: DictConfig):
     )
     set_seed(cfg.seed)
     
-    if cfg.wandb.enabled:
-        logger.info("Initializing wandb...")
-        wandb.init(
-            project=cfg.wandb.project,
-            entity=cfg.wandb.entity,
-            group=cfg.wandb.group,
-            name=f"{cfg.experiment.name}_{out_dir.name}",
-            mode=cfg.wandb.mode,
-            config=OmegaConf.to_container(cfg, resolve=True),
-        )
+    tracker.init(cfg, out_dir, logger)
 
     stage = cfg.experiment.stage
     model_source = cfg.model.name
     if stage in {"dpo", "dpo_curv"} and cfg.paths.sft_checkpoint:
         model_source = cfg.paths.sft_checkpoint
+    elif stage in {"dpo", "dpo_curv"}:
+        logger.warning(
+            "No paths.sft_checkpoint provided; training policy from base model with a separate frozen base reference."
+        )
 
     logger.info(f"Loading policy model: {model_source}")
     model, tokenizer = load_policy(
@@ -208,6 +196,7 @@ def main(cfg: DictConfig):
     else:
         logger.error(f"Unknown stage: {stage}")
     
+    tracker.finish()
     logger.info("Stage execution complete.")
 
 if __name__ == "__main__":

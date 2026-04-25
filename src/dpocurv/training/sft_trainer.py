@@ -3,13 +3,21 @@ from __future__ import annotations
 
 import torch
 from tqdm import tqdm
-import wandb
 from torch.optim import AdamW
 from transformers import get_cosine_schedule_with_warmup
 
-from dpocurv.training.runtime import autocast_context, create_train_loader, move_batch, optimizer_step_ready
+from dpocurv.training.runtime import (
+    autocast_context,
+    count_tokens,
+    create_train_loader,
+    move_batch,
+    optimizer_step_ready,
+)
 from dpocurv.utils.checkpoint import save_checkpoint
+from dpocurv.utils.dashboard import DashboardWriter
 from dpocurv.utils.logging import get_logger, JsonlMetricWriter
+from dpocurv.utils.telemetry import GpuTelemetry, profiler_context
+from dpocurv.utils.tracking import tracker
 
 
 def train_sft(
@@ -35,8 +43,13 @@ def train_sft(
     optimizer.zero_grad(set_to_none=True)
     optimizer_step = 0
     micro_step = 0
+    dashboard = DashboardWriter(cfg, logger)
     
-    with JsonlMetricWriter(f"{cfg.out_dir}/metrics.jsonl") as writer:
+    with (
+        GpuTelemetry(cfg, logger, device) as telemetry,
+        JsonlMetricWriter(f"{cfg.out_dir}/metrics.jsonl") as writer,
+        profiler_context(cfg, cfg.out_dir) as prof,
+    ):
         pbar = tqdm(total=total_optimizer_steps, desc="SFT")
         
         while optimizer_step < total_optimizer_steps:
@@ -45,6 +58,7 @@ def train_sft(
                     break
                 
                 batch = move_batch(batch, device)
+                tokens = count_tokens(batch)
                 with autocast_context(model, device):
                     outputs = model(**batch)
                     raw_loss = outputs.loss
@@ -70,13 +84,19 @@ def train_sft(
                         "grad_norm": float(grad_norm),
                         "lr": scheduler.get_last_lr()[0],
                     }
+                    metrics = telemetry.capture(metrics, optimizer_step, micro_step, tokens=tokens)
                     writer.write(metrics)
-                    if wandb.run is not None:
-                        wandb.log(metrics)
+                    telemetry.write(metrics)
+                    telemetry.print_summary(metrics)
+                    tracker.log(metrics, step=optimizer_step)
+                    dashboard.maybe_update(optimizer_step)
                     pbar.set_postfix({"loss": f"{metrics['loss']:.4f}"})
                 
                 if optimizer_step > 0 and optimizer_step % cfg.save_every == 0:
                     save_checkpoint(model, tokenizer, optimizer, scheduler, optimizer_step, cfg.out_dir)
+                if hasattr(prof, "step"):
+                    prof.step()
                 
     save_checkpoint(model, tokenizer, optimizer, scheduler, optimizer_step, cfg.out_dir)
+    dashboard.maybe_update(optimizer_step, force=True)
     logger.info("SFT training complete.")
