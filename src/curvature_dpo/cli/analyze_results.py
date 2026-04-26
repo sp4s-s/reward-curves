@@ -68,6 +68,10 @@ def pooled_spearman_z(rhos: List[float], ns: List[int]) -> Dict[str, float]:
     return {"pooled_rho": float(pooled_rho)}
 
 
+def _has_columns(df: pd.DataFrame, columns: list[str]) -> bool:
+    return all(col in df.columns for col in columns)
+
+
 # ── Figures ───────────────────────────────────────────────────────────────────
 
 def plot_reward_curvature_trajectory(dfs: List[pd.DataFrame], out_path: Path) -> None:
@@ -86,6 +90,8 @@ def plot_reward_curvature_trajectory(dfs: List[pd.DataFrame], out_path: Path) ->
 
 
 def plot_curvature_overopt_scatter(df: pd.DataFrame, out_path: Path) -> None:
+    if not _has_columns(df, ["eval_curv/Q_topk/mean", "eval_overopt/delta_raw"]):
+        return
     plt.figure(figsize=(7, 7))
     sns.regplot(data=df, x="eval_curv/Q_topk/mean", y="eval_overopt/delta_raw", scatter_kws={"alpha": 0.5})
     plt.xlabel("C̄ (mean reward curvature)")
@@ -97,6 +103,8 @@ def plot_curvature_overopt_scatter(df: pd.DataFrame, out_path: Path) -> None:
 
 
 def plot_trajectory_3d(df: pd.DataFrame, out_path: Path) -> None:
+    if "step" not in df.columns:
+        return
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111, projection="3d")
     sc = ax.scatter(
@@ -116,6 +124,8 @@ def plot_trajectory_3d(df: pd.DataFrame, out_path: Path) -> None:
 
 
 def plot_pareto_frontier(df: pd.DataFrame, out_path: Path) -> None:
+    if not _has_columns(df, ["eval_pref/pref_acc", "eval_overopt/delta_raw"]):
+        return
     plt.figure(figsize=(8, 7))
     if "run_name" in df.columns:
         sns.scatterplot(data=df, x="eval_pref/pref_acc", y="eval_overopt/delta_raw", hue="run_name", alpha=0.7)
@@ -163,6 +173,9 @@ def export_metrics_table(df: pd.DataFrame, out_path: Path) -> None:
         "run_name", "eval_pref/pref_acc", "eval_overopt/delta_raw",
         "eval_curv/Q_topk/mean",
     ] if c in df.columns]
+    if not cols:
+        pd.DataFrame().to_csv(out_path, index=False)
+        return
     summary = df.dropna(subset=[c for c in cols if c != "run_name"])
     if "run_name" in summary.columns:
         summary = summary.groupby("run_name").tail(1)[cols]

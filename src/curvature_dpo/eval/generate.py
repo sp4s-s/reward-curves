@@ -12,8 +12,6 @@ def generate_completions(
     tokenizer: PreTrainedTokenizer,
     prompts: list[str],
     n_samples: int = 1,
-    temperature: float = 0.9,
-    top_p: float = 0.95,
     max_new_tokens: int = 256,
     device: str = "cuda",
     batch_size: int = 8,
@@ -40,13 +38,14 @@ def generate_completions(
             
             outputs = model.generate(
                 **inputs,
-                do_sample=True,
-                temperature=temperature,
-                top_p=top_p,
+                do_sample=False,
                 max_new_tokens=max_new_tokens,
                 num_return_sequences=n_samples,
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
+                use_cache=True,
+                renormalize_logits=True,
+                remove_invalid_values=True,
             )
 
             input_width = inputs.input_ids.shape[-1]
