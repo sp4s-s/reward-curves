@@ -13,7 +13,7 @@ from curvature_dpo.training.runtime import (
     move_batch,
     optimizer_step_ready,
 )
-from curvature_dpo.training.metrics import clone_trainable_params, parameter_norm, update_norm
+from curvature_dpo.training.diagnostics import clone_trainable_params, parameter_norm, update_norm
 from curvature_dpo.utils.checkpoint import CheckpointManager
 from curvature_dpo.utils.dashboard import DashboardWriter
 from curvature_dpo.utils.logging import get_logger, JsonlMetricWriter

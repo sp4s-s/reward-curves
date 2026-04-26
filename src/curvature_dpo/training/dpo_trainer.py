@@ -6,7 +6,7 @@ from tqdm import tqdm
 from torch.optim import AdamW
 from transformers import get_cosine_schedule_with_warmup
 
-from curvature_dpo.training.losses import compute_logprobs, dpo_loss
+from curvature_dpo.training.functional import compute_logprobs, dpo_loss
 from curvature_dpo.training.runtime import (
     autocast_context,
     count_tokens,
@@ -14,7 +14,7 @@ from curvature_dpo.training.runtime import (
     move_batch,
     optimizer_step_ready,
 )
-from curvature_dpo.training.metrics import (
+from curvature_dpo.training.diagnostics import (
     clone_trainable_params,
     dpo_batch_metrics,
     parameter_norm,

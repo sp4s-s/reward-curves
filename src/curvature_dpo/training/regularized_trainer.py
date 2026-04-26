@@ -6,7 +6,7 @@ from tqdm import tqdm
 from torch.optim import AdamW
 from transformers import get_cosine_schedule_with_warmup
 
-from curvature_dpo.training.losses import compute_logprobs, dpo_loss, curvature_loss
+from curvature_dpo.training.functional import compute_logprobs, dpo_loss, curvature_loss
 from curvature_dpo.training.runtime import (
     autocast_context,
     count_tokens,
@@ -14,14 +14,14 @@ from curvature_dpo.training.runtime import (
     move_batch,
     optimizer_step_ready,
 )
-from curvature_dpo.training.metrics import (
+from curvature_dpo.training.diagnostics import (
     clone_trainable_params,
     dpo_batch_metrics,
     gradient_cosine,
     parameter_norm,
     update_norm,
 )
-from curvature_dpo.eval.pipeline import run_checkpoint_eval
+from curvature_dpo.eval.eval_protocol import run_checkpoint_eval
 from curvature_dpo.models.reward_model import GoldRewardModel
 from curvature_dpo.data.probe_set import build_probe_set
 from curvature_dpo.utils.checkpoint import CheckpointManager, load_checkpoint

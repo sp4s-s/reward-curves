@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import torch
-from curvature_dpo.training.losses import compute_logprobs
+from curvature_dpo.training.functional import compute_logprobs
 
 
 @torch.no_grad()

@@ -8,7 +8,7 @@ from omegaconf import DictConfig, open_dict
 from curvature_dpo.data.ultrafeedback import as_text, response_text, tokenize_dpo_pair, tokenize_sft_item
 from curvature_dpo.data.splits import get_splits
 from curvature_dpo.models.policy import load_policy, reference_device
-from curvature_dpo.training.curv_dpo_trainer import train_curv_dpo
+from curvature_dpo.training.regularized_trainer import train_curv_dpo
 from curvature_dpo.training.dpo_trainer import train_dpo
 from curvature_dpo.training.sft_trainer import train_sft
 from curvature_dpo.utils.artifacts import finalize_run_artifacts, write_error_record, write_run_meta

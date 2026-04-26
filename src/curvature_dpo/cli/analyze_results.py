@@ -38,7 +38,7 @@ def pooled_rho_random_effects(rhos: List[float], ns: List[int]) -> Dict[str, flo
 
 def load_run_data(run_dir: Path) -> pd.DataFrame:
     """Loads all metrics for a single run."""
-    # 1. Load training metrics
+    # 1. Load training.diagnostics
     train_metrics = []
     train_path = run_dir / "train.jsonl"
     if train_path.exists():
