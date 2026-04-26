@@ -1,4 +1,4 @@
-"""Run summaries, error records, and Kaggle-friendly artifact archives."""
+"""Run summaries, error records, and artifact archiving."""
 from __future__ import annotations
 
 import json
@@ -45,7 +45,11 @@ def write_run_summary(out_dir: str | Path) -> Path:
     train_last = _read_last_jsonl(out / "train.jsonl") or _read_last_jsonl(out / "metrics.jsonl")
     gpu_last = _read_last_jsonl(out / "gpu_metrics.jsonl")
     checkpoints = sorted(p.name for p in out.glob("step-*") if p.is_dir())
-    traces = sorted(str(p.relative_to(out)) for p in (out / "torch_traces").glob("*")) if (out / "torch_traces").exists() else []
+    traces = (
+        sorted(str(p.relative_to(out)) for p in (out / "torch_traces").glob("*"))
+        if (out / "torch_traces").exists()
+        else []
+    )
     files = sorted(p.name for p in out.iterdir()) if out.exists() else []
     summary = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -68,7 +72,6 @@ def write_run_meta(cfg: Any, out_dir: str | Path) -> Path:
     meta.mkdir(parents=True, exist_ok=True)
     try:
         from omegaconf import OmegaConf
-
         (meta / "config_resolved.yaml").write_text(OmegaConf.to_yaml(cfg, resolve=True))
     except Exception:
         (meta / "config_repr.txt").write_text(repr(cfg))
@@ -78,10 +81,14 @@ def write_run_meta(cfg: Any, out_dir: str | Path) -> Path:
         sha = "not_available"
     (meta / "git_sha.txt").write_text(sha + "\n")
     try:
-        freeze = subprocess.check_output(["python", "-m", "pip", "freeze"], text=True, stderr=subprocess.STDOUT)
+        freeze = subprocess.check_output(
+            ["python", "-m", "pip", "freeze"], text=True, stderr=subprocess.STDOUT
+        )
     except Exception:
         try:
-            freeze = subprocess.check_output(["python3", "-m", "pip", "freeze"], text=True, stderr=subprocess.STDOUT)
+            freeze = subprocess.check_output(
+                ["python3", "-m", "pip", "freeze"], text=True, stderr=subprocess.STDOUT
+            )
         except Exception as exc:
             freeze = f"pip freeze unavailable: {exc}\n"
     (meta / "pip_freeze.txt").write_text(freeze)
@@ -103,12 +110,16 @@ def archive_run(out_dir: str | Path, archive_name: str = "run_artifacts.zip", co
 
 
 def finalize_run_artifacts(cfg: Any, logger, failed: bool = False) -> dict[str, str]:
+    from curvature_dpo.utils.tracking import tracker
+
     out_dir = Path(cfg.out_dir)
     dashboard = write_dashboard(out_dir, cfg.dashboard.filename)
     summary = write_run_summary(out_dir)
+
     archive = None
     if bool(getattr(cfg.diagnostics, "final_archive", True)):
         archive = archive_run(out_dir, cfg.diagnostics.archive_name)
+
     result = {
         "dashboard": str(dashboard),
         "summary": str(summary),
@@ -116,15 +127,25 @@ def finalize_run_artifacts(cfg: Any, logger, failed: bool = False) -> dict[str, 
     if archive is not None:
         result["archive"] = str(archive)
         result["download_copy"] = str(Path.cwd() / f"{out_dir.name}_{cfg.diagnostics.archive_name}")
+
+    # Upload final artifacts to wandb so Kaggle runs are fully preserved.
+    run_name = cfg.run_name
+    tracker.log_artifact(f"{run_name}_summary", "summary", str(summary))
+    tracker.log_artifact(f"{run_name}_dashboard", "dashboard", str(dashboard))
+    if archive is not None:
+        tracker.log_artifact(f"{run_name}_archive", "archive", str(archive))
+
     logger.info("Final artifacts: %s", result)
     print("\nFinal artifacts")
     for key, value in result.items():
-        print(f"- {key}: {value}")
+        print(f"  {key}: {value}")
+
     latest = _read_last_jsonl(out_dir / "train.jsonl") or _read_last_jsonl(out_dir / "metrics.jsonl")
     if latest:
-        print("\nFinal logged metrics")
+        print("\nFinal metrics")
         for key in sorted(latest):
-            print(f"- {key}: {latest[key]}")
+            print(f"  {key}: {latest[key]}")
+
     return result
 
 

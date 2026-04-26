@@ -1,4 +1,4 @@
-"""Curvature-Regularized DPO Trainer."""
+"""Curvature-Regularized DPO trainer."""
 from __future__ import annotations
 
 import torch
@@ -45,17 +45,12 @@ def train_curv_dpo(
     resume_ckpt=None,
 ):
     logger = get_logger("curvature_dpo.curv_dpo")
-    logger.info(f"Starting Curvature-Regularized DPO: {cfg.run_name} (lambda={cfg.curv_lambda})")
+    logger.info("Starting Curvature-Regularized DPO: %s (lambda=%.3f)", cfg.run_name, cfg.curv_lambda)
     ref_device = ref_device or device
-    
-    # Initialize Gold RM for evaluation
+
     gold_rm = GoldRewardModel(device=device, bf16=cfg.model.bf16)
     probe_set = build_probe_set(probe_dataset, tokenizer)
-    
-    # 0. Reward-model sanity (one-time)
-    logger.info("Running Reward-model sanity check...")
-    # (Implementation details for sanity check)
-    
+
     train_loader = create_train_loader(train_dataset, cfg)
     optimizer = AdamW(policy.parameters(), lr=cfg.lr, weight_decay=0.0)
     total_optimizer_steps = int(cfg.total_steps)
@@ -87,15 +82,15 @@ def train_curv_dpo(
         profiler_context(cfg, cfg.out_dir) as prof,
     ):
         pbar = tqdm(total=total_optimizer_steps, desc="Curv-DPO", initial=optimizer_step)
-        
+
         while optimizer_step < total_optimizer_steps:
             for batch in train_loader:
                 if optimizer_step >= total_optimizer_steps:
                     break
-                
+
                 tokens = count_tokens(batch)
                 batch = move_batch(batch, device)
-                
+
                 with autocast_context(policy, device):
                     with torch.no_grad():
                         ref_chosen_logits = reference_model(
@@ -128,18 +123,18 @@ def train_curv_dpo(
                     ).logits
                     policy_rejected_logps = compute_logprobs(policy_rejected_logits, batch["rejected_labels"])
                     del policy_rejected_logits
-                    
+
                     l_dpo, c_rew, r_rew, acc = dpo_loss(
                         policy_chosen_logps, policy_rejected_logps,
                         ref_chosen_logps, ref_rejected_logps, beta=cfg.beta,
                     )
-                    
+
                     l_curv = curvature_loss(
                         policy, reference_model,
                         batch["chosen_input_ids"], batch["chosen_labels"],
                         pi_logps_base=policy_chosen_logps,
                         ref_logps_base=ref_chosen_logps,
-                        ref_logits=ref_chosen_logits,
+                        ref_logits=ref_chosen_logits.to(device),
                         beta=cfg.beta,
                         n_positions=cfg.curv_n_positions,
                         n_swaps=cfg.curv_n_swaps,
@@ -151,18 +146,19 @@ def train_curv_dpo(
                     raw_loss = l_dpo + cfg.curv_lambda * l_curv
                     loss = raw_loss / cfg.grad_accum
 
-                next_micro_step = micro_step + 1
-                will_update = optimizer_step_ready(next_micro_step, int(cfg.grad_accum))
+                micro_step += 1
+                will_update = optimizer_step_ready(micro_step, int(cfg.grad_accum))
                 next_step = optimizer_step + 1 if will_update else optimizer_step
                 will_log = will_update and (next_step == 1 or next_step % cfg.log_every == 0)
-                
+
+                # Compute gradient cosine before backward while graph is live.
+                # autograd.grad does not accumulate into .grad, so backward is unaffected.
                 grad_cos = None
                 if will_log and cfg.curv_lambda > 0:
                     grad_cos = gradient_cosine(l_dpo, l_curv, policy)
 
                 loss.backward()
-                micro_step = next_micro_step
-                
+
                 if not will_update:
                     continue
 
@@ -173,7 +169,7 @@ def train_curv_dpo(
                 optimizer.zero_grad(set_to_none=True)
                 optimizer_step = next_step
                 pbar.update(1)
-                
+
                 if will_log:
                     extra = dpo_batch_metrics(
                         policy_chosen_logps, policy_rejected_logps,
@@ -197,24 +193,29 @@ def train_curv_dpo(
                     writer.write(metrics)
                     tracker.log(metrics, step=optimizer_step)
                     dashboard.maybe_update(optimizer_step)
-                
+
                 if optimizer_step > 0 and optimizer_step % cfg.save_every == 0:
-                    # Run full checkpoint evaluation
                     eval_results = run_checkpoint_eval(
                         policy, reference_model, tokenizer, gold_rm,
                         eval_prefs_dataset, eval_gen_dataset, probe_set,
-                        cfg, optimizer_step, device=device
+                        cfg, optimizer_step, device=device,
                     )
-                    ckpt_mgr.save(
+                    ckpt_path = ckpt_mgr.save(
                         policy, tokenizer, optimizer, scheduler,
-                        optimizer_step, score=eval_results.get("eval_pref/pref_acc")
+                        optimizer_step, score=eval_results.get("eval_pref/pref_acc"),
+                    )
+                    tracker.log_artifact(
+                        f"checkpoint_step_{optimizer_step}", "model", str(ckpt_path)
                     )
 
-    # Final evaluation and save
+                if prof is not None:
+                    prof.step()
+
     run_checkpoint_eval(
         policy, reference_model, tokenizer, gold_rm,
         eval_prefs_dataset, eval_gen_dataset, probe_set,
-        cfg, optimizer_step, device=device
+        cfg, optimizer_step, device=device,
     )
-    ckpt_mgr.save(policy, tokenizer, optimizer, scheduler, optimizer_step)
-    logger.info("Curv-DPO training complete.")
+    final_ckpt = ckpt_mgr.save(policy, tokenizer, optimizer, scheduler, optimizer_step)
+    tracker.log_artifact(f"checkpoint_final", "model", str(final_ckpt))
+    logger.info("Curvature-Regularized DPO training complete.")
