@@ -91,6 +91,15 @@ def _tokenize_split(ds, tokenizer, cfg: DictConfig, stage: str):
     return tokenized
 
 
+def _limit_rows(ds, limit: int | None):
+    if limit is None:
+        return ds
+    limit = int(limit)
+    if limit <= 0:
+        return ds.select([])
+    return ds.select(range(min(len(ds), limit)))
+
+
 @hydra.main(version_base=None, config_path="../../../configs", config_name="config")
 def main(cfg: DictConfig):
     # Setup paths and logger
@@ -210,13 +219,20 @@ def main(cfg: DictConfig):
                 gradient_checkpointing=False,
             )
             reference_model.requires_grad_(False)
+            eval_prefs = _tokenize_split(
+                _limit_rows(splits["test"], int(cfg.data.pref_eval_size)),
+                tokenizer,
+                cfg,
+                "dpo",
+            )
+            eval_gen = _limit_rows(splits["oracle"], int(cfg.data.gen_eval_size))
             train_curv_dpo(
                 model,
                 reference_model,
                 tokenizer,
                 _tokenize_split(splits["dpo"], tokenizer, cfg, stage),
-                splits["test"], # eval_prefs
-                splits["oracle"], # eval_gen
+                eval_prefs,
+                eval_gen,
                 splits["probe"], # probe_dataset
                 cfg,
                 device=cfg.device,

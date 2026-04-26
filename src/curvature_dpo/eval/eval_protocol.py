@@ -2,12 +2,8 @@
 from __future__ import annotations
 
 import os
-import json
-import subprocess
-import sys
 import time
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import numpy as np
 import pandas as pd
@@ -23,8 +19,13 @@ from curvature_dpo.models.reward_model import GoldRewardModel
 from curvature_dpo.utils.logging import get_logger
 from curvature_dpo.utils.tracking import tracker
 from curvature_dpo.types import ProbeItem
+from curvature_dpo.training.runtime import create_eval_loader
 
 logger = get_logger("curvature_dpo.eval")
+
+
+def _model_device(model) -> str:
+    return str(next(model.parameters()).device)
 
 
 def run_checkpoint_eval(
@@ -63,8 +64,7 @@ def run_checkpoint_eval(
     tracker.log_artifact(f"generations_step_{step}", "eval_table", gen_path)
 
     if step % (cfg.save_every * 4) == 0 or step == cfg.total_steps:
-        from curvature_dpo.training.runtime import create_train_loader
-        eval_batch = next(iter(create_train_loader(eval_prefs_dataset, cfg)))
+        eval_batch = next(iter(create_eval_loader(eval_prefs_dataset, cfg)))
 
         def _dpo_loss_fn(model, batch):
             from curvature_dpo.training.functional import compute_logprobs, dpo_loss
@@ -93,17 +93,27 @@ def evaluate_preference_accuracy(policy, reference_model, tokenizer, dataset, cf
     from curvature_dpo.training.functional import compute_logprobs
 
     all_margins = []
-    with torch.no_grad():
-        for batch in torch.utils.data.DataLoader(dataset, batch_size=cfg.micro_batch_size):
+    policy_device = _model_device(policy)
+    with torch.inference_mode():
+        for batch in create_eval_loader(dataset, cfg):
             chosen_lp = compute_logprobs(
-                policy(batch["chosen_input_ids"].to(device), attention_mask=batch["chosen_attention_mask"].to(device)).logits,
-                batch["chosen_labels"].to(device),
+                policy(
+                    batch["chosen_input_ids"].to(policy_device, non_blocking=True),
+                    attention_mask=batch["chosen_attention_mask"].to(policy_device, non_blocking=True),
+                ).logits,
+                batch["chosen_labels"].to(policy_device, non_blocking=True),
             )
             rejected_lp = compute_logprobs(
-                policy(batch["rejected_input_ids"].to(device), attention_mask=batch["rejected_attention_mask"].to(device)).logits,
-                batch["rejected_labels"].to(device),
+                policy(
+                    batch["rejected_input_ids"].to(policy_device, non_blocking=True),
+                    attention_mask=batch["rejected_attention_mask"].to(policy_device, non_blocking=True),
+                ).logits,
+                batch["rejected_labels"].to(policy_device, non_blocking=True),
             )
             all_margins.append((chosen_lp - rejected_lp).cpu())
+
+    if not all_margins:
+        return {"pref_acc": 0.0, "margin_mean": 0.0, "perplexity": float("nan")}
 
     margins = torch.cat(all_margins)
     pref_acc = float((margins > 0).float().mean().item())
@@ -188,12 +198,27 @@ def evaluate_overoptimization(
     policy, reference_model, tokenizer, gold_rm, dataset, cfg, device
 ) -> tuple[Dict[str, float], pd.DataFrame]:
     from curvature_dpo.eval.generate import generate_completions
-    from curvature_dpo.eval.score import compute_implicit_rewards
 
     prompts = [item["prompt"] for item in dataset]
-    completions = generate_completions(policy, tokenizer, prompts, max_new_tokens=cfg.data.max_response_tokens, device=device)
+    completions = generate_completions(
+        policy,
+        tokenizer,
+        prompts,
+        max_new_tokens=cfg.data.max_response_tokens,
+        device=_model_device(policy),
+        batch_size=int(cfg.micro_batch_size),
+    )
 
-    r_implicit = compute_implicit_rewards(policy, reference_model, tokenizer, prompts, completions, beta=cfg.beta, device=device)
+    r_implicit = compute_implicit_rewards(
+        policy,
+        reference_model,
+        tokenizer,
+        prompts,
+        completions,
+        beta=cfg.beta,
+        device=_model_device(policy),
+        batch_size=int(cfg.micro_batch_size),
+    )
     r_gold = gold_rm.score_batch(prompts, completions)
 
     lengths = [len(tokenizer.encode(c)) for c in completions]

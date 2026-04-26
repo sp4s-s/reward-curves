@@ -8,9 +8,11 @@ training:
   total_steps: 4000
   save_every: 250
   # 2×T4 (15 GiB each): policy on cuda:0, reference on cuda:1.
-  # Effective batch = micro_batch_size × grad_accum = 4 × 4 = 16.
-  micro_batch_size: 4
-  grad_accum: 4
+  # Effective batch = micro_batch_size × grad_accum = 8 × 2 = 16.
+  # This keeps the policy GPU under the 15 GiB ceiling while cutting optimizer
+  # sync frequency in half versus 4 × 4.
+  micro_batch_size: 8
+  grad_accum: 2
 
 curvature:
   lambda: 0.1

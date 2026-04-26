@@ -1,4 +1,4 @@
-"""Shared runtime helpers for efficient single-GPU training."""
+"""Shared runtime helpers for efficient training and evaluation."""
 from __future__ import annotations
 
 from contextlib import nullcontext
@@ -21,6 +21,21 @@ def create_train_loader(dataset, cfg: Any) -> DataLoader:
         "num_workers": num_workers,
         "pin_memory": pin_memory,
         "generator": generator,
+    }
+    if num_workers > 0:
+        kwargs["persistent_workers"] = True
+        kwargs["prefetch_factor"] = int(getattr(cfg, "prefetch_factor", 2))
+    return DataLoader(dataset, **kwargs)
+
+
+def create_eval_loader(dataset, cfg: Any) -> DataLoader:
+    num_workers = int(getattr(cfg, "num_workers", 0))
+    kwargs = {
+        "batch_size": int(cfg.micro_batch_size),
+        "shuffle": False,
+        "drop_last": False,
+        "num_workers": num_workers,
+        "pin_memory": bool(getattr(cfg, "pin_memory", False)),
     }
     if num_workers > 0:
         kwargs["persistent_workers"] = True
@@ -61,4 +76,11 @@ def count_tokens(batch: dict[str, torch.Tensor]) -> int:
     return total
 
 
-__all__ = ["autocast_context", "count_tokens", "create_train_loader", "move_batch", "optimizer_step_ready"]
+__all__ = [
+    "autocast_context",
+    "count_tokens",
+    "create_eval_loader",
+    "create_train_loader",
+    "move_batch",
+    "optimizer_step_ready",
+]
