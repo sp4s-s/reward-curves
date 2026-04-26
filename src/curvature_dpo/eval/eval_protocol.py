@@ -26,7 +26,7 @@ from curvature_dpo.eval.overopt import (
 )
 from curvature_dpo.eval.calibration import compute_calibration_curve, compute_perplexity
 from curvature_dpo.eval.score import compute_implicit_rewards
-from curvature_dpo.eval.generate import generate_samples
+from curvature_dpo.eval.generate import generate_completions
 from curvature_dpo.models.reward_model import GoldRewardModel
 from curvature_dpo.utils.logging import get_logger
 from curvature_dpo.utils.tracking import tracker
