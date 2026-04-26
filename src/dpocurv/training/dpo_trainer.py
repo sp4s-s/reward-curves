@@ -20,7 +20,7 @@ from dpocurv.training.metrics import (
     parameter_norm,
     update_norm,
 )
-from dpocurv.utils.checkpoint import save_checkpoint
+from dpocurv.utils.checkpoint import load_checkpoint, save_checkpoint
 from dpocurv.utils.dashboard import DashboardWriter
 from dpocurv.utils.logging import get_logger, JsonlMetricWriter
 from dpocurv.utils.telemetry import GpuTelemetry, profiler_context
@@ -35,6 +35,7 @@ def train_dpo(
     cfg,
     device="cuda",
     ref_device: str | None = None,
+    resume_ckpt=None,
 ):
     logger = get_logger("dpocurv.dpo")
     logger.info(f"Starting DPO training: {cfg.run_name}")
@@ -50,20 +51,26 @@ def train_dpo(
         num_warmup_steps=cfg.warmup_steps,
         num_training_steps=total_optimizer_steps,
     )
-    
+
+    optimizer_step = 0
+    if resume_ckpt is not None:
+        optimizer_step = load_checkpoint(optimizer, scheduler, resume_ckpt)
+        logger.info(f"Resumed: starting from step {optimizer_step}/{total_optimizer_steps}")
+    micro_step = optimizer_step * int(cfg.grad_accum)
+
+    keep_last_only = bool(getattr(cfg, "keep_last_only", True))
+
     policy.train()
     reference_model.eval()
     optimizer.zero_grad(set_to_none=True)
-    optimizer_step = 0
-    micro_step = 0
     dashboard = DashboardWriter(cfg, logger)
-    
+
     with (
         GpuTelemetry(cfg, logger, device) as telemetry,
         JsonlMetricWriter(f"{cfg.out_dir}/train.jsonl") as writer,
         profiler_context(cfg, cfg.out_dir) as prof,
     ):
-        pbar = tqdm(total=total_optimizer_steps, desc="DPO")
+        pbar = tqdm(total=total_optimizer_steps, desc="DPO", initial=optimizer_step)
         
         while optimizer_step < total_optimizer_steps:
             for batch in train_loader:
@@ -173,10 +180,18 @@ def train_dpo(
                     pbar.set_postfix({"acc": f"{metrics['reward_acc']:.2f}", "loss": f"{metrics['loss']:.4f}"})
                 
                 if optimizer_step > 0 and optimizer_step % cfg.save_every == 0:
-                    save_checkpoint(policy, tokenizer, optimizer, scheduler, optimizer_step, cfg.out_dir)
+                    save_checkpoint(
+                        policy, tokenizer, optimizer, scheduler,
+                        optimizer_step, cfg.out_dir,
+                        keep_last_only=keep_last_only,
+                    )
                 if hasattr(prof, "step"):
                     prof.step()
-                
-    save_checkpoint(policy, tokenizer, optimizer, scheduler, optimizer_step, cfg.out_dir)
+
+    save_checkpoint(
+        policy, tokenizer, optimizer, scheduler,
+        optimizer_step, cfg.out_dir,
+        keep_last_only=keep_last_only,
+    )
     dashboard.maybe_update(optimizer_step, force=True)
     logger.info("DPO training complete.")

@@ -70,6 +70,7 @@ training:
   warmup_steps: 50
   total_steps: 4000
   save_every: 250
+  keep_last_only: true     # rolling checkpoint — keeps disk usage flat
   log_every: 10
   beta: 0.1
   grad_clip: 1.0
@@ -89,6 +90,9 @@ paths:
   out_root: "runs"
   data_cache: "data/cache"
   sft_checkpoint: null
+  # Set to a checkpoint dir path to resume, or "auto" to find the latest
+  # checkpoint_rolling in the active out_dir automatically.
+  resume_checkpoint: "auto"
 
 # Hydra output configuration
 hydra:
