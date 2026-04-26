@@ -185,16 +185,18 @@ def train_dpo(
                     pbar.set_postfix({"acc": f"{metrics['reward_acc']:.2f}", "loss": f"{metrics['loss']:.4f}"})
                 
                 if optimizer_step > 0 and optimizer_step % cfg.save_every == 0:
-                    ckpt_mgr.save(
+                    ckpt_path = ckpt_mgr.save(
                         policy, tokenizer, optimizer, scheduler,
                         optimizer_step, score=metrics.get("reward_acc")
                     )
+                    tracker.log_artifact(f"checkpoint_step_{optimizer_step}", "model", str(ckpt_path))
                 if hasattr(prof, "step"):
                     prof.step()
 
-    ckpt_mgr.save(
+    final_ckpt = ckpt_mgr.save(
         policy, tokenizer, optimizer, scheduler,
         optimizer_step, score=metrics.get("reward_acc") if 'metrics' in locals() else None
     )
+    tracker.log_artifact("checkpoint_final", "model", str(final_ckpt))
     dashboard.maybe_update(optimizer_step, force=True)
     logger.info("DPO training complete.")

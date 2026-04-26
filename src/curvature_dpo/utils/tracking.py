@@ -1,6 +1,7 @@
-"""Optional experiment tracking integrations."""
+"""Experiment tracking via Weights & Biases."""
 from __future__ import annotations
 
+import os
 from typing import Any
 
 
@@ -15,7 +16,7 @@ class Tracker:
         try:
             import wandb
         except ImportError:
-            logger.warning("wandb.enabled=true but wandb is not installed; continuing without W&B.")
+            logger.warning("wandb not installed; continuing without W&B.")
             return
 
         from omegaconf import OmegaConf
@@ -36,20 +37,23 @@ class Tracker:
         if self.enabled and self._wandb is not None:
             self._wandb.log(metrics, step=step)
 
-    def save_file(self, path: str) -> None:
-        """Uploads a file to the WandB run."""
+    def log_image(self, key: str, path: str, step: int | None = None) -> None:
         if self.enabled and self._wandb is not None:
-            self._wandb.save(path)
+            self._wandb.log({key: self._wandb.Image(path)}, step=step)
 
-    def log_artifact(self, name: str, type: str, path: str, description: str | None = None) -> None:
-        """Logs a large file or directory as a WandB Artifact."""
+    def save_file(self, path: str) -> None:
         if self.enabled and self._wandb is not None:
-            artifact = self._wandb.Artifact(name=name, type=type, description=description)
-            if os.path.isdir(path):
-                artifact.add_dir(path)
-            else:
-                artifact.add_file(path)
-            self._wandb.log_artifact(artifact)
+            self._wandb.save(path, base_path=os.path.dirname(path))
+
+    def log_artifact(self, name: str, artifact_type: str, path: str, description: str | None = None) -> None:
+        if not (self.enabled and self._wandb is not None):
+            return
+        artifact = self._wandb.Artifact(name=name, type=artifact_type, description=description)
+        if os.path.isdir(path):
+            artifact.add_dir(path)
+        else:
+            artifact.add_file(path)
+        self._wandb.log_artifact(artifact)
 
     def finish(self) -> None:
         if self.enabled and self._wandb is not None:
@@ -57,6 +61,5 @@ class Tracker:
 
 
 tracker = Tracker()
-
 
 __all__ = ["tracker", "Tracker"]

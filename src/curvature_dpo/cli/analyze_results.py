@@ -1,23 +1,36 @@
-"""Script to generate paper-ready figures and tables from experiment results."""
+"""Generate figures and tables from completed experiment runs."""
 from __future__ import annotations
 
-import os
+import argparse
 import json
-import pandas as pd
+from pathlib import Path
+from typing import Dict, List, Any
+
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from typing import List, Dict, Any
-from pathlib import Path
+from scipy import stats
 
-from curvature_dpo.utils.analysis import (
-    compute_correlations, 
-    compute_pareto_frontier, 
-    matched_pref_acc_comparison
-)
+from curvature_dpo.utils.analysis import compute_correlations, compute_pareto_frontier, matched_pref_acc_comparison
+
+
+# ── Data loading ─────────────────────────────────────────────────────────────
+
+def load_run_metrics(run_dir: Path) -> pd.DataFrame:
+    rows: List[Dict[str, Any]] = []
+    train_path = run_dir / "train.jsonl"
+    if train_path.exists():
+        with open(train_path) as f:
+            for line in f:
+                try:
+                    rows.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    return pd.DataFrame(rows)
+
 
 def permutation_test(x: np.ndarray, y: np.ndarray, n_perms: int = 5000) -> float:
-    """Computes p-value for Spearman correlation using permutation test."""
     obs_rho, _ = stats.spearmanr(x, y)
     count = 0
     y_perm = y.copy()
@@ -28,138 +41,168 @@ def permutation_test(x: np.ndarray, y: np.ndarray, n_perms: int = 5000) -> float
             count += 1
     return count / n_perms
 
-def pooled_rho_random_effects(rhos: List[float], ns: List[int]) -> Dict[str, float]:
-    """Fisher z-transformation pooling for random effects."""
-    zs = [0.5 * np.log((1 + r) / (1 - r)) for r in rhos]
-    weights = [n - 3 for n in ns]
+
+def pooled_spearman_z(rhos: List[float], ns: List[int]) -> Dict[str, float]:
+    """Fisher z-transform pooling for random effects across runs."""
+    zs = [0.5 * np.log((1 + r) / (1 - r + 1e-8) + 1e-8) for r in rhos]
+    weights = [max(n - 3, 1) for n in ns]
     pooled_z = np.average(zs, weights=weights)
     pooled_rho = (np.exp(2 * pooled_z) - 1) / (np.exp(2 * pooled_z) + 1)
     return {"pooled_rho": float(pooled_rho)}
 
-def load_run_data(run_dir: Path) -> pd.DataFrame:
-    """Loads all metrics for a single run."""
-    # 1. Load training.diagnostics
-    train_metrics = []
-    train_path = run_dir / "train.jsonl"
-    if train_path.exists():
-        with open(train_path, "r") as f:
-            for line in f:
-                train_metrics.append(json.loads(line))
-    
-    # 2. Load eval metrics (these are logged to WandB, but for local analysis we can look at the jsonl or re-extract)
-    # For now, let's assume we have a summary.json or similar
-    return pd.DataFrame(train_metrics)
 
-def generate_figure_1(dfs: List[pd.DataFrame], out_path: Path):
-    """C_bar and Delta over time."""
+# ── Figures ───────────────────────────────────────────────────────────────────
+
+def plot_reward_curvature_trajectory(dfs: List[pd.DataFrame], out_path: Path) -> None:
     plt.figure(figsize=(10, 6))
     for i, df in enumerate(dfs):
-        sns.lineplot(data=df, x="step", y="eval_curv/Q_topk_mean", label=f"Run {i} Curv")
-        sns.lineplot(data=df, x="step", y="eval_overopt/delta_raw", label=f"Run {i} Delta", linestyle="--")
-    plt.title("Curvature and Overoptimization Gap Over Time")
-    plt.savefig(out_path)
+        if "eval_curv/Q_topk/mean" in df.columns:
+            sns.lineplot(data=df, x="step", y="eval_curv/Q_topk/mean", label=f"Run {i} C̄")
+        if "eval_overopt/delta_raw" in df.columns:
+            sns.lineplot(data=df, x="step", y="eval_overopt/delta_raw", label=f"Run {i} Δ", linestyle="--")
+    plt.xlabel("Training step")
+    plt.ylabel("Metric value")
+    plt.title("Reward curvature and overoptimisation gap over training")
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150)
     plt.close()
 
-def generate_figure_2(df: pd.DataFrame, out_path: Path):
-    """Scatter of (C_bar, Delta) with regression."""
-    plt.figure(figsize=(8, 8))
-    sns.regplot(data=df, x="eval_curv/Q_topk_mean", y="eval_overopt/delta_raw")
-    plt.title("Curvature vs Overoptimization Gap")
-    plt.savefig(out_path)
+
+def plot_curvature_overopt_scatter(df: pd.DataFrame, out_path: Path) -> None:
+    plt.figure(figsize=(7, 7))
+    sns.regplot(data=df, x="eval_curv/Q_topk/mean", y="eval_overopt/delta_raw", scatter_kws={"alpha": 0.5})
+    plt.xlabel("C̄ (mean reward curvature)")
+    plt.ylabel("Δ (overoptimisation gap)")
+    plt.title("Reward curvature vs overoptimisation gap")
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150)
     plt.close()
 
-def generate_figure_2_3d(df: pd.DataFrame, out_path: Path):
-    """3D Scatter of (step, C_bar, Delta)."""
+
+def plot_trajectory_3d(df: pd.DataFrame, out_path: Path) -> None:
     fig = plt.figure(figsize=(10, 8))
-    ax = fig.add_subplot(111, projection='3d')
-    ax.scatter(df["step"], df["eval_curv/Q_topk_mean"], df["eval_overopt/delta_raw"], c=df["step"], cmap='viridis')
-    ax.set_xlabel('Step')
-    ax.set_ylabel('Curvature')
-    ax.set_zlabel('Delta')
-    plt.title("3D Loss Landscape Trajectory")
-    plt.savefig(out_path)
+    ax = fig.add_subplot(111, projection="3d")
+    sc = ax.scatter(
+        df["step"],
+        df.get("eval_curv/Q_topk/mean", np.zeros(len(df))),
+        df.get("eval_overopt/delta_raw", np.zeros(len(df))),
+        c=df["step"], cmap="viridis", s=20,
+    )
+    plt.colorbar(sc, ax=ax, label="Step")
+    ax.set_xlabel("Step")
+    ax.set_ylabel("C̄ curvature")
+    ax.set_zlabel("Δ overopt")
+    plt.title("Training trajectory in (step, curvature, overopt) space")
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150)
     plt.close()
 
-def generate_figure_6(df: pd.DataFrame, out_path: Path):
-    """Per-position curvature heatmap."""
-    # Group by position tertiles
-    tertiles = ["early_curv", "mid_curv", "late_curv"]
-    data = df[[f"eval_curv/Q_topk_{t}" for t in tertiles]].mean().values.reshape(1, -1)
-    plt.figure(figsize=(8, 4))
-    sns.heatmap(data, annot=True, xticklabels=["Early", "Mid", "Late"], yticklabels=["Mean Curv"])
-    plt.title("Per-Position Curvature Heatmap")
-    plt.savefig(out_path)
+
+def plot_pareto_frontier(df: pd.DataFrame, out_path: Path) -> None:
+    plt.figure(figsize=(8, 7))
+    if "run_name" in df.columns:
+        sns.scatterplot(data=df, x="eval_pref/pref_acc", y="eval_overopt/delta_raw", hue="run_name", alpha=0.7)
+    else:
+        sns.scatterplot(data=df, x="eval_pref/pref_acc", y="eval_overopt/delta_raw", alpha=0.7)
+    plt.xlabel("Preference accuracy")
+    plt.ylabel("Δ (overoptimisation gap)")
+    plt.title("Pareto frontier: preference accuracy vs overoptimisation")
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150)
     plt.close()
 
-def generate_figure_landscape(grid_path: Path, out_path: Path):
-    """Contour plot of the 2D loss landscape."""
+
+def plot_position_curvature_heatmap(df: pd.DataFrame, out_path: Path) -> None:
+    cols = [c for c in ["eval_curv/Q_topk/early_curv", "eval_curv/Q_topk/mid_curv", "eval_curv/Q_topk/late_curv"] if c in df.columns]
+    if not cols:
+        return
+    data = df[cols].mean().values.reshape(1, -1)
+    labels = [c.split("/")[-1].replace("_curv", "") for c in cols]
+    plt.figure(figsize=(8, 3))
+    sns.heatmap(data, annot=True, fmt=".4f", xticklabels=labels, yticklabels=["Mean C̄"])
+    plt.title("Per-position reward curvature")
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150)
+    plt.close()
+
+
+def plot_loss_landscape(grid_path: Path, out_path: Path) -> None:
     if not grid_path.exists():
         return
     grid = np.load(grid_path)
     plt.figure(figsize=(8, 7))
     plt.contourf(grid, levels=20, cmap="RdGy")
-    plt.colorbar(label="Loss / Reward")
-    plt.title("2D Loss Landscape (Filter-normalized directions)")
-    plt.savefig(out_path)
+    plt.colorbar(label="Loss")
+    plt.title(f"2D loss landscape — {grid_path.stem}")
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150)
     plt.close()
 
-def generate_figure_3(df: pd.DataFrame, out_path: Path):
-    """Pareto frontier of pref-acc vs Delta."""
-    plt.figure(figsize=(8, 8))
-    sns.scatterplot(data=df, x="eval_pref/pref_acc", y="eval_overopt/delta_raw", hue="run_name")
-    # Add Pareto line logic here
-    plt.title("Pareto Frontier: Accuracy vs Overoptimization")
-    plt.savefig(out_path)
-    plt.close()
 
-def generate_table_1(df: pd.DataFrame, out_path: Path):
-    """Run inventory with final metrics."""
-    summary = df.groupby("run_name").tail(1)[[
-        "run_name", "eval_pref/pref_acc", "eval_overopt/delta_raw", 
-        "eval_overopt/kl_est", "eval_curv/Q_topk_mean"
-    ]]
+# ── Tables ────────────────────────────────────────────────────────────────────
+
+def export_metrics_table(df: pd.DataFrame, out_path: Path) -> None:
+    cols = [c for c in [
+        "run_name", "eval_pref/pref_acc", "eval_overopt/delta_raw",
+        "eval_curv/Q_topk/mean",
+    ] if c in df.columns]
+    summary = df.dropna(subset=[c for c in cols if c != "run_name"])
+    if "run_name" in summary.columns:
+        summary = summary.groupby("run_name").tail(1)[cols]
     summary.to_csv(out_path, index=False)
 
-def main(exp_dir: str):
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+
+def main(exp_dir: str) -> None:
     exp_path = Path(exp_dir)
-    run_dirs = [d for d in exp_path.iterdir() if d.is_dir()]
-    
-    all_runs_data = []
+    run_dirs = sorted(d for d in exp_path.iterdir() if d.is_dir())
+    if not run_dirs:
+        print(f"No run directories found in {exp_path}")
+        return
+
+    all_dfs: List[pd.DataFrame] = []
     for rd in run_dirs:
-        df = load_run_data(rd)
-        df["run_name"] = rd.name
-        all_runs_data.append(df)
-        
-    combined_df = pd.concat(all_runs_data)
-    
-    artifacts_dir = exp_path / "paper_artifacts"
-    artifacts_dir.mkdir(exist_ok=True)
-    
-    generate_figure_1(all_runs_data, artifacts_dir / "fig1_trajectories.png")
-    generate_figure_2(combined_df, artifacts_dir / "fig2_scatter.png")
-    generate_figure_2_3d(combined_df, artifacts_dir / "fig2_3d_landscape.png")
-    generate_figure_3(combined_df, artifacts_dir / "fig3_pareto.png")
-    generate_figure_6(combined_df, artifacts_dir / "fig6_position_heatmap.png")
-    
-    # Generate landscapes for any found .npy files
-    for npy in (exp_path / run_dirs[0] / "artifacts").glob("landscape_step_*.npy"):
+        df = load_run_metrics(rd)
+        if not df.empty:
+            df["run_name"] = rd.name
+            all_dfs.append(df)
+
+    if not all_dfs:
+        print("No training metrics found in any run directory.")
+        return
+
+    combined = pd.concat(all_dfs, ignore_index=True)
+    out = exp_path / "figures"
+    out.mkdir(exist_ok=True)
+
+    plot_reward_curvature_trajectory(all_dfs, out / "curvature_trajectory.png")
+    plot_curvature_overopt_scatter(combined, out / "curvature_overopt_scatter.png")
+    plot_trajectory_3d(combined, out / "trajectory_3d.png")
+    plot_pareto_frontier(combined, out / "pareto_frontier.png")
+    plot_position_curvature_heatmap(combined, out / "position_curvature_heatmap.png")
+
+    for npy in run_dirs[0].glob("artifacts/landscape_step_*.npy"):
         step = npy.stem.split("_")[-1]
-        generate_figure_landscape(npy, artifacts_dir / f"fig_landscape_step_{step}.png")
-        
-    generate_table_1(combined_df, artifacts_dir / "table1_inventory.csv")
-    
-    print(f"Artifacts generated in {artifacts_dir}")
-    
-    # Upload all artifacts to WandB
-    from curvature_dpo.utils.tracking import tracker
-    for fig in artifacts_dir.glob("*.png"):
-        tracker.log({f"paper/{fig.stem}": tracker._wandb.Image(str(fig))})
-    for table in artifacts_dir.glob("*.csv"):
-        tracker.save_file(str(table))
+        plot_loss_landscape(npy, out / f"landscape_step_{step}.png")
+
+    export_metrics_table(combined, out / "metrics_table.csv")
+    print(f"Figures written to {out}")
+
+    # Upload to wandb if a run is active.
+    try:
+        import wandb
+        if wandb.run is not None:
+            for fig in sorted(out.glob("*.png")):
+                wandb.log({f"figures/{fig.stem}": wandb.Image(str(fig))})
+            wandb.save(str(out / "metrics_table.csv"), base_path=str(out))
+            print("Uploaded figures and table to wandb.")
+    except ImportError:
+        pass
+
 
 if __name__ == "__main__":
-    import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--exp_dir", type=str, required=True)
+    parser.add_argument("--exp_dir", required=True, help="Path to the experiment output directory")
     args = parser.parse_args()
     main(args.exp_dir)

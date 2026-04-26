@@ -3,7 +3,7 @@ import curvature_dpo
 from curvature_dpo.utils.seed import set_seed
 from curvature_dpo.data.splits import get_splits
 from curvature_dpo.models.policy import load_policy
-from curvature_dpo.training.losses import dpo_loss, curvature_loss
+from curvature_dpo.training.functional import dpo_loss, curvature_loss
 
 def test_imports():
     print(f"curvature_dpo version: {curvature_dpo.__version__}")
