@@ -49,7 +49,7 @@ def train_curv_dpo(
     ref_device = ref_device or device
     
     # Initialize Gold RM for evaluation
-    gold_rm = GoldRewardModel(device=device, bf16=cfg.bf16)
+    gold_rm = GoldRewardModel(device=device, bf16=cfg.model.bf16)
     probe_set = build_probe_set(probe_dataset, tokenizer)
     
     # 0. Reward-model sanity (one-time)
