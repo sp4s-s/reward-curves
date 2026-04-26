@@ -1,10 +1,5 @@
-# Usage Guide: Implicit-Reward Curvature Research
-
-This document provides instructions for running the research pipeline and interpreting the results.
-
-## 1. Setup
-
-Ensure you have created and activated the environment:
+# Usage Guide: Implicit-Reward Curvature 
+https://wandb.ai/sp4ss-self/implicit-rl-curvature/workspace?nw=nwusersp4ss
 
 ```bash
 conda env create -f environment.yaml
@@ -12,7 +7,6 @@ conda activate implicit_rl
 pip install -e .
 ```
 
-## 2. Configuration
 
 We use **Hydra** for configuration. The base settings are in `configs/config.yaml`.
 Experiment-specific settings are in `configs/experiment/*.yaml`.
@@ -22,7 +16,6 @@ Experiment-specific settings are in `configs/experiment/*.yaml`.
 - `data.probe_size`: Number of items in the fixed probe set (default: 128).
 - `curvature.lambda`: Strength of the curvature regularizer (0.0 for baseline DPO).
 
-## 3. Running Experiments
 
 The system automatically saves results in the `runs/` directory with a timestamped and experiment-named folder.
 
@@ -64,8 +57,6 @@ python src/curvature_dpo/cli/main.py experiment=dpo_curv wandb.enabled=true
 
 
 
-## 4. Results & Logs
-
 Every run generates an output directory: `runs/YYYY-MM-DD/HH-MM-SS_<experiment_name>/`.
 
 ### Directory Contents:
@@ -81,14 +72,13 @@ Every run generates an output directory: `runs/YYYY-MM-DD/HH-MM-SS_<experiment_n
 - `step-XXXXXX/`: Model checkpoints in HuggingFace format.
 - `.hydra/`: Full record of the config and environment used for the run.
 
-## 5. Curvature Estimation (Offline)
 
 To analyze checkpoints from a completed run:
 ```bash
 # This is typically called via a script in src/curvature_dpo/cli/eval_all.py (TBD)
 ```
 
-## 6. Performance Optimization
+### Performance Optimization
 
 The code is configured for single-GPU runs across T4, P100, V100, H100, and B200:
 - **Device auto-detect**: `device=auto` selects CUDA when available and logs the detected GPU.
