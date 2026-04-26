@@ -1,4 +1,4 @@
-"""Curvature-Regularized DPO trainer — optimized for 2×T4."""
+"""Curvature-Regularized DPO trainer — 2×T4 optimized."""
 from __future__ import annotations
 
 import os
@@ -34,43 +34,7 @@ from curvature_dpo.utils.logging import get_logger, JsonlMetricWriter
 from curvature_dpo.utils.telemetry import GpuTelemetry, profiler_context
 from curvature_dpo.utils.tracking import tracker
 
-
-# Tell PyTorch's allocator to use expandable segments — reduces fragmentation
-# on 15 GiB T4 GPUs where the curvature loop allocates many variable-size tensors.
 os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
-
-
-def _forward_ref(reference_model, input_ids, attention_mask, labels, ref_device, device):
-    """Reference forward pass (no grad). Returns log-probs on device."""
-    logits = reference_model(
-        input_ids=input_ids.to(ref_device, non_blocking=True),
-        attention_mask=attention_mask.to(ref_device, non_blocking=True),
-    ).logits
-    lp = compute_logprobs(logits, labels.to(ref_device, non_blocking=True))
-    del logits
-    return lp.to(device, non_blocking=True)
-
-
-def _forward_ref_with_candidates(
-    reference_model, input_ids, attention_mask, labels, ref_device, device,
-    n_positions, n_swaps, swap_topk,
-):
-    """Reference forward pass that also pre-samples swap candidates.
-
-    Returns (log-probs on device, candidates on ref_device, positions on ref_device).
-    The full logit tensor is freed before returning.
-    """
-    logits = reference_model(
-        input_ids=input_ids.to(ref_device, non_blocking=True),
-        attention_mask=attention_mask.to(ref_device, non_blocking=True),
-    ).logits
-    lp = compute_logprobs(logits, labels.to(ref_device, non_blocking=True))
-    candidates, positions = sample_swap_candidates(
-        logits, labels.to(ref_device, non_blocking=True),
-        n_positions, n_swaps, swap_topk,
-    )
-    del logits  # free the large [B, T, V] tensor immediately
-    return lp.to(device, non_blocking=True), candidates, positions
 
 
 def train_curv_dpo(
@@ -89,7 +53,7 @@ def train_curv_dpo(
     logger = get_logger("curvature_dpo.curv_dpo")
     logger.info("Starting Curvature-Regularized DPO: %s (lambda=%.3f)", cfg.run_name, cfg.curv_lambda)
     ref_device = ref_device or device
-    dual_gpu = (device != ref_device)
+    dual_gpu = device != ref_device
 
     gold_rm = GoldRewardModel(device=device, bf16=cfg.model.bf16)
     probe_set = build_probe_set(probe_dataset, tokenizer)
@@ -119,8 +83,8 @@ def train_curv_dpo(
     optimizer.zero_grad(set_to_none=True)
     dashboard = DashboardWriter(cfg, logger)
 
-    # Dedicated CUDA stream for reference model (cuda:1) so its compute overlaps
-    # with policy compute on cuda:0.
+    # Dedicated CUDA stream for the frozen reference model (cuda:1).
+    # Enqueuing ref work here lets it execute in parallel with policy work on cuda:0.
     ref_stream = torch.cuda.Stream(device=ref_device) if dual_gpu else None
 
     with (
@@ -138,28 +102,33 @@ def train_curv_dpo(
                 tokens = count_tokens(batch)
                 batch = move_batch(batch, device)
 
-                # ── Reference passes (cuda:1) overlapped with policy (cuda:0) ─────
-                # Kick off both reference forwards on the ref stream (no_grad, cuda:1).
-                # Policy forwards happen on the default stream (cuda:0) in parallel.
+                # ── Phase 1: enqueue both ref forwards on ref_stream (cuda:1) ──────
+                # Python returns immediately after enqueueing; the GPU executes these
+                # while phase 2 runs the policy forwards on cuda:0.
+                if ref_stream is not None:
+                    ref_stream.wait_stream(torch.cuda.current_stream(device))
 
-                with torch.no_grad():
-                    if ref_stream is not None:
-                        ref_stream.wait_stream(torch.cuda.current_stream(device))
-
-                    ctx = torch.cuda.stream(ref_stream) if ref_stream is not None else torch.no_grad()
-                    with ctx:
-                        ref_chosen_logps, swap_candidates, swap_positions = _forward_ref_with_candidates(
-                            reference_model,
-                            batch["chosen_input_ids"], batch["chosen_attention_mask"], batch["chosen_labels"],
-                            ref_device, device,
+                with torch.cuda.stream(ref_stream) if ref_stream else _nullctx():
+                    with torch.no_grad():
+                        rc_logits = reference_model(
+                            input_ids=batch["chosen_input_ids"].to(ref_device),
+                            attention_mask=batch["chosen_attention_mask"].to(ref_device),
+                        ).logits
+                        _ref_chosen_lp = compute_logprobs(rc_logits, batch["chosen_labels"].to(ref_device))
+                        _swap_cands, _swap_pos = sample_swap_candidates(
+                            rc_logits, batch["chosen_labels"].to(ref_device),
                             cfg.curv_n_positions, cfg.curv_n_swaps, cfg.curv_swap_topk,
                         )
-                        ref_rejected_logps = _forward_ref(
-                            reference_model,
-                            batch["rejected_input_ids"], batch["rejected_attention_mask"], batch["rejected_labels"],
-                            ref_device, device,
-                        )
+                        del rc_logits
 
+                        rr_logits = reference_model(
+                            input_ids=batch["rejected_input_ids"].to(ref_device),
+                            attention_mask=batch["rejected_attention_mask"].to(ref_device),
+                        ).logits
+                        _ref_rejected_lp = compute_logprobs(rr_logits, batch["rejected_labels"].to(ref_device))
+                        del rr_logits
+
+                # ── Phase 2: policy forwards on cuda:0 (parallel with phase 1) ────
                 with autocast_context(policy, device):
                     policy_chosen_logits = policy(
                         input_ids=batch["chosen_input_ids"],
@@ -175,9 +144,16 @@ def train_curv_dpo(
                     policy_rejected_logps = compute_logprobs(policy_rejected_logits, batch["rejected_labels"])
                     del policy_rejected_logits
 
-                    # Sync: ref stream must be done before we read ref_chosen/rejected_logps.
+                    # ── Sync: wait for ref_stream, then move small result tensors ──
                     if ref_stream is not None:
                         torch.cuda.current_stream(device).wait_stream(ref_stream)
+
+                    # Blocking transfer of small tensors — ref log-probs are [B] floats,
+                    # swap candidates are [B, n_pos, n_sw] ints. Both negligible size.
+                    ref_chosen_logps = _ref_chosen_lp.to(device)
+                    ref_rejected_logps = _ref_rejected_lp.to(device)
+                    swap_candidates = _swap_cands.to(device)
+                    swap_positions = _swap_pos.to(device)
 
                     l_dpo, c_rew, r_rew, acc = dpo_loss(
                         policy_chosen_logps, policy_rejected_logps,
@@ -189,8 +165,8 @@ def train_curv_dpo(
                         batch["chosen_input_ids"], batch["chosen_labels"],
                         pi_logps_base=policy_chosen_logps,
                         ref_logps_base=ref_chosen_logps,
-                        swap_candidates=swap_candidates.to(device, non_blocking=True),
-                        swap_positions=swap_positions.to(device, non_blocking=True),
+                        swap_candidates=swap_candidates,
+                        swap_positions=swap_positions,
                         beta=cfg.beta,
                         device=device,
                         ref_device=ref_device,
@@ -204,6 +180,8 @@ def train_curv_dpo(
                 next_step = optimizer_step + 1 if will_update else optimizer_step
                 will_log = will_update and (next_step == 1 or next_step % cfg.log_every == 0)
 
+                # Gradient cosine uses autograd.grad (retain_graph=True) on the live
+                # graph — must be called before loss.backward().
                 grad_cos = None
                 if will_log and cfg.curv_lambda > 0:
                     grad_cos = gradient_cosine(l_dpo, l_curv, policy)
@@ -268,3 +246,9 @@ def train_curv_dpo(
     final_ckpt = ckpt_mgr.save(policy, tokenizer, optimizer, scheduler, optimizer_step)
     tracker.log_artifact("checkpoint_final", "model", str(final_ckpt))
     logger.info("Curvature-Regularized DPO training complete.")
+
+
+class _nullctx:
+    """No-op context manager used when ref_stream is None (single GPU)."""
+    def __enter__(self): return self
+    def __exit__(self, *_): pass
