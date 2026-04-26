@@ -1,28 +1,23 @@
-"""DPO and Curv-DPO loss functions."""
+"""DPO and curvature-regularized DPO loss functions."""
 from __future__ import annotations
+
+from typing import Tuple
 
 import torch
 import torch.nn.functional as F
 
 
-def compute_logprobs(logits, labels):
-    """
-    Computes log-probabilities for the labels in the logits.
-    Masks labels == -100.
-    """
-    # Shift so that tokens < n predict n
+def compute_logprobs(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+    """Sum of per-token log-probs for non-masked positions."""
     shift_logits = logits[..., :-1, :].contiguous()
     shift_labels = labels[..., 1:].contiguous()
-    
-    # Compute log-probs memory efficiently using cross_entropy
     loss = F.cross_entropy(
         shift_logits.view(-1, shift_logits.size(-1)),
         shift_labels.view(-1),
         ignore_index=-100,
         reduction="none",
     )
-    loss = loss.view(shift_labels.shape)
-    return -loss.sum(-1)
+    return -loss.view(shift_labels.shape).sum(-1)
 
 
 def dpo_loss(
@@ -31,20 +26,48 @@ def dpo_loss(
     reference_chosen_logps: torch.Tensor,
     reference_rejected_logps: torch.Tensor,
     beta: float = 0.1,
-):
-    """Standard DPO loss."""
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     pi_logratios = policy_chosen_logps - policy_rejected_logps
     ref_logratios = reference_chosen_logps - reference_rejected_logps
-    
-    logits = pi_logratios - ref_logratios
-    loss = -F.logsigmoid(beta * logits).mean()
-    
-    # Optional: metrics
+    loss = -F.logsigmoid(beta * (pi_logratios - ref_logratios)).mean()
     chosen_rewards = beta * (policy_chosen_logps - reference_chosen_logps).detach()
     rejected_rewards = beta * (policy_rejected_logps - reference_rejected_logps).detach()
-    reward_accuracies = (chosen_rewards > rejected_rewards).float().mean()
-    
-    return loss, chosen_rewards, rejected_rewards, reward_accuracies
+    accuracy = (chosen_rewards > rejected_rewards).float().mean()
+    return loss, chosen_rewards, rejected_rewards, accuracy
+
+
+@torch.no_grad()
+def sample_swap_candidates(
+    ref_logits: torch.Tensor,
+    labels: torch.Tensor,
+    n_positions: int,
+    n_swaps: int,
+    swap_topk: int,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Sample swap token indices and positions from reference logits.
+
+    Returns candidates (batch, n_positions, n_swaps) and positions (batch, n_positions),
+    both on the same device as ref_logits. Caller should free ref_logits after this call.
+    """
+    batch_size = labels.shape[0]
+    device = ref_logits.device
+    k = min(swap_topk, ref_logits.size(-1))
+
+    candidates = torch.zeros(batch_size, n_positions, n_swaps, dtype=torch.long, device=device)
+    positions = torch.zeros(batch_size, n_positions, dtype=torch.long, device=device)
+
+    for b in range(batch_size):
+        resp_idx = (labels[b] != -100).nonzero(as_tuple=True)[0]
+        if len(resp_idx) == 0:
+            continue
+        sampled = resp_idx[torch.randint(0, len(resp_idx), (n_positions,), device=device)]
+        for pi, pos in enumerate(sampled):
+            positions[b, pi] = pos
+            logits_pos = max(int(pos.item()) - 1, 0)
+            topk = torch.topk(ref_logits[b, logits_pos, :], k).indices
+            candidates[b, pi, :] = topk[torch.randint(0, k, (n_swaps,), device=device)]
+
+    return candidates, positions
 
 
 def curvature_loss(
@@ -54,58 +77,51 @@ def curvature_loss(
     labels: torch.Tensor,
     pi_logps_base: torch.Tensor,
     ref_logps_base: torch.Tensor,
-    ref_logits: torch.Tensor,
+    swap_candidates: torch.Tensor,
+    swap_positions: torch.Tensor,
     beta: float = 0.1,
-    n_positions: int = 2,
-    n_swaps: int = 2,
-    swap_topk: int = 50,
     device: str = "cuda",
     ref_device: str | None = None,
-):
-    """
-    In-loop curvature regularizer.
-    Samples swaps for the 'chosen' completion and penalizes squared implicit-reward changes.
+) -> torch.Tensor:
+    """Curvature regularisation term.
+
+    Penalises squared implicit-reward change under single-token swaps sampled
+    from the reference distribution. swap_candidates / swap_positions are
+    pre-computed (see sample_swap_candidates) so the full reference logit
+    tensor does not need to be held in memory during this call.
     """
     ref_device = ref_device or device
-    batch_size, seq_len = input_ids.shape
+    batch_size = input_ids.shape[0]
+    n_positions = swap_candidates.shape[1]
+    n_swaps = swap_candidates.shape[2]
 
     r_base = beta * (pi_logps_base - ref_logps_base)
 
-    total_curv_loss = 0.0
+    total: torch.Tensor = torch.tensor(0.0, device=device)
     count = 0
 
-    for _ in range(n_positions):
-        for _ in range(n_swaps):
-            swapped_input_ids = input_ids.clone()
+    for pi in range(n_positions):
+        for si in range(n_swaps):
+            swapped_ids = input_ids.clone()
             swapped_labels = labels.clone()
             for b in range(batch_size):
-                resp_indices = (labels[b] != -100).nonzero(as_tuple=True)[0]
-                if len(resp_indices) == 0:
-                    continue
-                pos = resp_indices[torch.randint(0, len(resp_indices), (1,)).item()]
+                pos = int(swap_positions[b, pi].item())
+                tok = int(swap_candidates[b, pi, si].item())
+                swapped_ids[b, pos] = tok
+                swapped_labels[b, pos] = tok
 
-                # Sample swap token from top-k of ref_model logits (already on ref_device)
-                k = min(swap_topk, ref_logits.size(-1))
-                logits_pos = max(int(pos.item()) - 1, 0)
-                topk_indices = torch.topk(ref_logits[b, logits_pos, :], k).indices
-                swap_token = topk_indices[torch.randint(0, k, (1,)).item()]
-                swapped_input_ids[b, pos] = swap_token.to(device)
-                swapped_labels[b, pos] = swap_token.to(device)
-
-            # Policy forward on device (cuda:0)
             pi_logps_swapped = compute_logprobs(
-                policy(swapped_input_ids).logits,
+                policy(swapped_ids).logits,
                 swapped_labels,
             )
-            # Reference forward on ref_device (cuda:1 if 2xT4), result moved back
             with torch.no_grad():
                 ref_logps_swapped = compute_logprobs(
-                    reference_model(swapped_input_ids.to(ref_device)).logits,
+                    reference_model(swapped_ids.to(ref_device)).logits,
                     swapped_labels.to(ref_device),
-                ).to(device)
+                ).to(device, non_blocking=True)
 
             r_swapped = beta * (pi_logps_swapped - ref_logps_swapped)
-            total_curv_loss += (r_swapped - r_base).pow(2).mean()
+            total = total + (r_swapped - r_base).pow(2).mean()
             count += 1
 
-    return total_curv_loss / count if count > 0 else torch.tensor(0.0, device=device)
+    return total / count if count > 0 else torch.tensor(0.0, device=device)
