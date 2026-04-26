@@ -20,7 +20,7 @@ from dpocurv.training.metrics import (
     parameter_norm,
     update_norm,
 )
-from dpocurv.utils.checkpoint import load_checkpoint, save_checkpoint
+from dpocurv.utils.checkpoint import CheckpointManager, load_checkpoint
 from dpocurv.utils.dashboard import DashboardWriter
 from dpocurv.utils.logging import get_logger, JsonlMetricWriter
 from dpocurv.utils.telemetry import GpuTelemetry, profiler_context
@@ -58,7 +58,12 @@ def train_dpo(
         logger.info(f"Resumed: starting from step {optimizer_step}/{total_optimizer_steps}")
     micro_step = optimizer_step * int(cfg.grad_accum)
 
-    keep_last_only = bool(getattr(cfg, "keep_last_only", True))
+    ckpt_mgr = CheckpointManager(
+        cfg.out_dir,
+        keep_last_n=int(getattr(cfg, "keep_last_n", 2)),
+        keep_best=bool(getattr(cfg, "keep_best", True)),
+        mode="max",
+    )
 
     policy.train()
     reference_model.eval()
@@ -180,18 +185,16 @@ def train_dpo(
                     pbar.set_postfix({"acc": f"{metrics['reward_acc']:.2f}", "loss": f"{metrics['loss']:.4f}"})
                 
                 if optimizer_step > 0 and optimizer_step % cfg.save_every == 0:
-                    save_checkpoint(
+                    ckpt_mgr.save(
                         policy, tokenizer, optimizer, scheduler,
-                        optimizer_step, cfg.out_dir,
-                        keep_last_only=keep_last_only,
+                        optimizer_step, score=metrics.get("reward_acc")
                     )
                 if hasattr(prof, "step"):
                     prof.step()
 
-    save_checkpoint(
+    ckpt_mgr.save(
         policy, tokenizer, optimizer, scheduler,
-        optimizer_step, cfg.out_dir,
-        keep_last_only=keep_last_only,
+        optimizer_step, score=metrics.get("reward_acc") if 'metrics' in locals() else None
     )
     dashboard.maybe_update(optimizer_step, force=True)
     logger.info("DPO training complete.")

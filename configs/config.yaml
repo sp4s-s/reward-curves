@@ -70,7 +70,8 @@ training:
   warmup_steps: 50
   total_steps: 4000
   save_every: 250
-  keep_last_only: true     # rolling checkpoint — keeps disk usage flat
+  keep_last_n: 2        # keep the last N periodic checkpoints on disk
+  keep_best: true       # also always keep the best checkpoint by reward_acc
   log_every: 10
   beta: 0.1
   grad_clip: 1.0

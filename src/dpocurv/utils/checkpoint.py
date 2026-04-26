@@ -1,63 +1,21 @@
-"""Checkpoint save/load helpers with rolling (keep-last-only) support."""
+"""Checkpoint management: keep last-N + best-by-metric checkpoints."""
 from __future__ import annotations
 
+import json
 import shutil
+from collections import deque
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Deque, Dict, List, Optional
 
 
-_ROLLING_NAME = "checkpoint_rolling"
-_PREV_NAME = "checkpoint_rolling_prev"
+# ──────────────────────────────────────────────────────────────────────────────
+# Low-level I/O helpers
+# ──────────────────────────────────────────────────────────────────────────────
 
-
-def save_checkpoint(
-    model: Any,
-    tokenizer: Any,
-    optimizer: Any,
-    scheduler: Optional[Any],
-    step: int,
-    out_dir: str | Path,
-    extras: Optional[Dict[str, Any]] = None,
-    keep_last_only: bool = True,
-) -> Path:
-    """Save a checkpoint.
-
-    When *keep_last_only* is True (default) only one rolling checkpoint is kept
-    on disk at any time.  The previous checkpoint is deleted *after* the new one
-    is fully written, so a crash during save never loses the previous state.
-    """
-    import torch
-
-    root = Path(out_dir)
-
-    if keep_last_only:
-        ckpt_dir = root / _ROLLING_NAME
-        # Write to a staging dir first — crash during write never corrupts
-        # the previous good checkpoint.
-        staging = root / f"{_ROLLING_NAME}_staging"
-        if staging.exists():
-            shutil.rmtree(staging)
-        staging.mkdir(parents=True, exist_ok=True)
-        _write_ckpt(model, tokenizer, optimizer, scheduler, step, staging, extras, torch)
-        # Rotate: current rolling → prev, staging → rolling
-        if ckpt_dir.exists():
-            if (root / _PREV_NAME).exists():
-                shutil.rmtree(root / _PREV_NAME)
-            ckpt_dir.rename(root / _PREV_NAME)
-        staging.rename(ckpt_dir)
-        # Delete previous only after new one is safely in place
-        prev = root / _PREV_NAME
-        if prev.exists():
-            shutil.rmtree(prev)
-        return ckpt_dir
-    else:
-        ckpt_dir = root / f"step-{step:06d}"
-        ckpt_dir.mkdir(parents=True, exist_ok=True)
-        _write_ckpt(model, tokenizer, optimizer, scheduler, step, ckpt_dir, extras, torch)
-        return ckpt_dir
-
-
-def _write_ckpt(model, tokenizer, optimizer, scheduler, step, ckpt_dir, extras, torch):
+def _write_ckpt(
+    model, tokenizer, optimizer, scheduler, step: int,
+    ckpt_dir: Path, extras: Optional[Dict], torch,
+) -> None:
     model.save_pretrained(ckpt_dir, safe_serialization=True)
     tokenizer.save_pretrained(ckpt_dir)
     state: Dict[str, Any] = {
@@ -70,21 +28,180 @@ def _write_ckpt(model, tokenizer, optimizer, scheduler, step, ckpt_dir, extras, 
     torch.save(state, ckpt_dir / "trainer_state.pt")
 
 
+def _safe_rmtree(path: Path) -> None:
+    """Delete *path* without raising if it no longer exists."""
+    try:
+        if path.exists():
+            shutil.rmtree(path)
+    except Exception:
+        pass
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CheckpointManager
+# ──────────────────────────────────────────────────────────────────────────────
+
+class CheckpointManager:
+    """Saves checkpoints and prunes old ones, keeping:
+
+    * the **last** ``keep_last_n`` checkpoints (recency),
+    * optionally the **best** checkpoint by a scalar metric.
+
+    The "best" dir is never deleted, even when it falls outside the recency
+    window.  The total number of checkpoints on disk is at most
+    ``keep_last_n + 1`` (when best ≠ any recent).
+
+    Crash-safety: every save goes to a ``_staging`` directory first and is
+    renamed into place atomically, so an interrupted write leaves the
+    previous checkpoint intact.
+    """
+
+    _STATE_FILE = "ckptmgr_state.json"
+
+    def __init__(
+        self,
+        out_dir: str | Path,
+        keep_last_n: int = 2,
+        keep_best: bool = True,
+        mode: str = "max",          # "max" for reward_acc, "min" for loss
+    ) -> None:
+        self.out_dir = Path(out_dir)
+        self.keep_last_n = max(keep_last_n, 1)
+        self.keep_best = keep_best
+        self.mode = mode
+        self._recents: Deque[Path] = deque()
+        self._best_ckpt: Optional[Path] = None
+        self._best_score: Optional[float] = None
+        self._restore_state()
+
+    # ── public ────────────────────────────────────────────────────────────────
+
+    def save(
+        self,
+        model, tokenizer, optimizer, scheduler,
+        step: int,
+        score: Optional[float] = None,
+        extras: Optional[Dict] = None,
+    ) -> Path:
+        """Write a checkpoint and prune obsolete ones. Returns the new path."""
+        import torch
+
+        ckpt_dir = self.out_dir / f"step-{step:06d}"
+        staging = self.out_dir / f"step-{step:06d}_staging"
+
+        # Write into staging first
+        _safe_rmtree(staging)
+        staging.mkdir(parents=True, exist_ok=True)
+        _write_ckpt(model, tokenizer, optimizer, scheduler, step, staging, extras, torch)
+
+        # Swap staging → final
+        _safe_rmtree(ckpt_dir)
+        staging.rename(ckpt_dir)
+
+        # Update best
+        is_new_best = False
+        old_best = self._best_ckpt
+        if self.keep_best and score is not None:
+            if self._best_score is None:
+                is_new_best = True
+            elif self.mode == "max" and score > self._best_score:
+                is_new_best = True
+            elif self.mode == "min" and score < self._best_score:
+                is_new_best = True
+            if is_new_best:
+                self._best_score = score
+                self._best_ckpt = ckpt_dir
+
+        # Add to recency window and prune
+        self._recents.append(ckpt_dir)
+        self._prune()
+
+        # Delete old best if it is no longer protected
+        if is_new_best and old_best is not None:
+            self._maybe_delete(old_best)
+
+        self._persist_state()
+        return ckpt_dir
+
+    @property
+    def best(self) -> Optional[Path]:
+        return self._best_ckpt
+
+    @property
+    def latest(self) -> Optional[Path]:
+        return self._recents[-1] if self._recents else None
+
+    # ── internal ──────────────────────────────────────────────────────────────
+
+    def _prune(self) -> None:
+        while len(self._recents) > self.keep_last_n:
+            old = self._recents.popleft()
+            self._maybe_delete(old)
+
+    def _maybe_delete(self, path: Path) -> None:
+        """Delete *path* unless it is the best checkpoint."""
+        if path == self._best_ckpt:
+            return
+        _safe_rmtree(path)
+
+    def _state_path(self) -> Path:
+        return self.out_dir / self._STATE_FILE
+
+    def _persist_state(self) -> None:
+        """Write manager state to JSON so it survives process restart."""
+        try:
+            self.out_dir.mkdir(parents=True, exist_ok=True)
+            data = {
+                "keep_last_n": self.keep_last_n,
+                "keep_best": self.keep_best,
+                "mode": self.mode,
+                "recents": [str(p) for p in self._recents],
+                "best_ckpt": str(self._best_ckpt) if self._best_ckpt else None,
+                "best_score": self._best_score,
+            }
+            self._state_path().write_text(json.dumps(data, indent=2))
+        except Exception:
+            pass  # non-fatal
+
+    def _restore_state(self) -> None:
+        """Reload recency list + best from a previous session if available."""
+        sp = self._state_path()
+        if not sp.exists():
+            return
+        try:
+            data = json.loads(sp.read_text())
+            for p_str in data.get("recents", []):
+                p = Path(p_str)
+                if (p / "trainer_state.pt").exists():
+                    self._recents.append(p)
+            best = data.get("best_ckpt")
+            if best:
+                bp = Path(best)
+                if (bp / "trainer_state.pt").exists():
+                    self._best_ckpt = bp
+                    self._best_score = data.get("best_score")
+        except Exception:
+            pass  # corrupt state file — start fresh
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Functional helpers (used by trainers / main.py)
+# ──────────────────────────────────────────────────────────────────────────────
+
 def load_checkpoint(
     optimizer: Any,
     scheduler: Any,
     ckpt_dir: str | Path,
 ) -> int:
-    """Restore optimizer + scheduler from *ckpt_dir* and return the saved step.
+    """Restore optimizer + scheduler states and return the saved step.
 
-    Model weights must be loaded separately by passing *ckpt_dir* as the
-    model_name to ``load_policy()``.
+    Model weights must be loaded separately via ``load_policy(ckpt_dir, …)``.
     """
     import torch
 
     state_path = Path(ckpt_dir) / "trainer_state.pt"
     if not state_path.exists():
-        raise FileNotFoundError(f"No trainer_state.pt found in {ckpt_dir}")
+        raise FileNotFoundError(f"No trainer_state.pt in {ckpt_dir}")
     state = torch.load(state_path, map_location="cpu")
     if optimizer is not None and state.get("optimizer") is not None:
         optimizer.load_state_dict(state["optimizer"])
@@ -93,10 +210,28 @@ def load_checkpoint(
     return int(state["step"])
 
 
-def find_rolling_checkpoint(out_dir: str | Path) -> Optional[Path]:
-    """Return the rolling checkpoint path if it exists and is valid."""
-    p = Path(out_dir) / _ROLLING_NAME
-    return p if (p / "trainer_state.pt").exists() else None
+def find_resume_checkpoint(out_dir: str | Path) -> Optional[Path]:
+    """Auto-detect the latest checkpoint to resume from.
+
+    Preference order:
+    1. ``ckptmgr_state.json`` → most-recent entry (authoritative)
+    2. Newest ``step-XXXXXX`` dir with a ``trainer_state.pt``
+    """
+    root = Path(out_dir)
+    sp = root / CheckpointManager._STATE_FILE
+    if sp.exists():
+        try:
+            data = json.loads(sp.read_text())
+            recents = data.get("recents", [])
+            for p_str in reversed(recents):
+                p = Path(p_str)
+                if (p / "trainer_state.pt").exists():
+                    return p
+        except Exception:
+            pass
+    # Fallback: scan disk
+    candidates = sorted(root.glob("step-*/trainer_state.pt"))
+    return candidates[-1].parent if candidates else None
 
 
 def list_checkpoints(out_dir: str | Path) -> List[Path]:
@@ -117,10 +252,10 @@ def latest_checkpoint(out_dir: str | Path) -> Optional[Path]:
 
 
 __all__ = [
-    "find_rolling_checkpoint",
+    "CheckpointManager",
+    "find_resume_checkpoint",
     "latest_checkpoint",
     "list_checkpoints",
     "load_checkpoint",
-    "save_checkpoint",
     "step_of",
 ]

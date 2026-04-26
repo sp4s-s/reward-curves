@@ -12,7 +12,7 @@ from dpocurv.training.curv_dpo_trainer import train_curv_dpo
 from dpocurv.training.dpo_trainer import train_dpo
 from dpocurv.training.sft_trainer import train_sft
 from dpocurv.utils.artifacts import finalize_run_artifacts, write_error_record, write_run_meta
-from dpocurv.utils.checkpoint import find_rolling_checkpoint
+from dpocurv.utils.checkpoint import find_resume_checkpoint
 from dpocurv.utils.device import configure_torch_for_device, get_device_profile, gpu_topology_info
 from dpocurv.utils.logging import get_logger
 from dpocurv.utils.seed import set_seed
@@ -31,7 +31,8 @@ def _flatten_runtime_cfg(cfg: DictConfig, out_dir: Path, device: str) -> None:
         cfg.curv_n_positions = cfg.curvature.n_positions
         cfg.curv_n_swaps = cfg.curvature.n_swaps
         cfg.curv_swap_topk = cfg.curvature.swap_topk
-        cfg.keep_last_only = bool(cfg.training.get("keep_last_only", True))
+        cfg.keep_last_n = int(cfg.training.get("keep_last_n", 2))
+        cfg.keep_best = bool(cfg.training.get("keep_best", True))
 
 
 def _validate_cfg(cfg: DictConfig) -> None:
@@ -137,7 +138,7 @@ def main(cfg: DictConfig):
         resume_cfg = str(cfg.paths.get("resume_checkpoint", "auto"))
         if resume_cfg and resume_cfg.lower() not in {"none", "null", "", "false"}:
             if resume_cfg == "auto":
-                resume_ckpt = find_rolling_checkpoint(cfg.out_dir)
+                resume_ckpt = find_resume_checkpoint(cfg.out_dir)
             else:
                 p = Path(resume_cfg)
                 resume_ckpt = p if (p / "trainer_state.pt").exists() else None
