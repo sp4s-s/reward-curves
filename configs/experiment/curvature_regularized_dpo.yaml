@@ -6,13 +6,26 @@ experiment:
 training:
   lr: 5e-7
   total_steps: 4000
-  save_every: 250
+  save_every: 500
   # 2×T4 (15 GiB each): policy on cuda:0, reference on cuda:1.
-  # Effective batch = micro_batch_size × grad_accum = 8 × 2 = 16.
-  # This keeps the policy GPU under the 15 GiB ceiling while cutting optimizer
-  # sync frequency in half versus 4 × 4.
-  micro_batch_size: 8
-  grad_accum: 2
+  # Effective batch = micro_batch_size × grad_accum = 4 × 4 = 16.
+  # This leaves more long-run headroom than 8 × 2 on T4 while keeping the
+  # same effective batch size.
+  micro_batch_size: 4
+  grad_accum: 4
+
+data:
+  pref_eval_size: 256
+  gen_eval_size: 128
+  eval_batch_size: 1
+  rm_batch_size: 2
+  max_response_tokens: 96
+
+evaluation:
+  enable_loss_landscape: true
+  loss_landscape_points: 5
+  loss_landscape_range: 0.2
+  loss_landscape_min_free_gb: 3.0
 
 curvature:
   lambda: 0.1

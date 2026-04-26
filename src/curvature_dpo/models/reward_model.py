@@ -47,15 +47,31 @@ class GoldRewardModel:
 
     @torch.no_grad()
     def score_batch(self, prompts: list[str], responses: list[str]) -> torch.Tensor:
-        """Efficient batch scoring."""
-        inputs = self.tokenizer(
-            prompts,
-            responses,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=512
-        ).to(self.device)
-        
-        logits = self.model(**inputs).logits
-        return logits.squeeze(-1)
+        """Efficient batch scoring with chunking to cap peak memory."""
+        return self.score_batch_chunked(prompts, responses)
+
+    @torch.no_grad()
+    def score_batch_chunked(
+        self,
+        prompts: list[str],
+        responses: list[str],
+        batch_size: int = 8,
+    ) -> torch.Tensor:
+        if len(prompts) != len(responses):
+            raise ValueError("prompts and responses must have the same length")
+        outputs: list[torch.Tensor] = []
+        for start in range(0, len(prompts), batch_size):
+            end = start + batch_size
+            inputs = self.tokenizer(
+                prompts[start:end],
+                responses[start:end],
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=512,
+            ).to(self.device)
+            logits = self.model(**inputs).logits.squeeze(-1).detach().cpu()
+            outputs.append(logits)
+        if not outputs:
+            return torch.empty(0, dtype=torch.float32)
+        return torch.cat(outputs, dim=0)

@@ -56,25 +56,33 @@ data:
   probe_size: 128                # Reduced per user request
   pref_eval_size: 2000
   gen_eval_size: 1000
+  eval_batch_size: 2
+  rm_batch_size: 8
   min_response_tokens: 4
   max_response_tokens: 256
   oracle_holdout_pct: 0.2        # Added per user request
 
 training:
-  micro_batch_size: 8
-  grad_accum: 2
+  micro_batch_size: 4
+  grad_accum: 4
   num_workers: 2
   pin_memory: true
-  prefetch_factor: 2
+  prefetch_factor: 1
   lr: 5.0e-7
   warmup_steps: 50
   total_steps: 4000
-  save_every: 250
+  save_every: 500
   keep_last_n: 2        # keep the last N periodic checkpoints on disk
   keep_best: true       # also always keep the best checkpoint by reward_acc
   log_every: 10
   beta: 0.1
   grad_clip: 1.0
+
+evaluation:
+  enable_loss_landscape: false
+  loss_landscape_points: 5
+  loss_landscape_range: 0.2
+  loss_landscape_min_free_gb: 3.0
 
 curvature:
   lambda: 0.0

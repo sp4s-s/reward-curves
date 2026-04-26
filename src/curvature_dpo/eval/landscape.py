@@ -7,11 +7,12 @@ from tqdm import tqdm
 from typing import Any, List, Dict
 
 @torch.no_grad()
-def get_random_direction(model, device: str = "cuda") -> List[torch.Tensor]:
-    """Generates a random direction with filter-wise normalization."""
+def get_random_direction(model) -> List[torch.Tensor]:
+    """Generates a random direction on CPU with filter-wise normalization."""
     direction = []
     for p in model.parameters():
-        d = torch.randn_like(p)
+        p_cpu = p.detach().cpu()
+        d = torch.randn_like(p_cpu)
         # Filter-wise normalization
         if p.dim() <= 1:
             d.fill_(0) # Skip biases/layer-norms to keep it simple or handle differently
@@ -36,9 +37,9 @@ def compute_2d_landscape(
     Computes loss values on a 2D grid around the current parameters.
     """
     policy.eval()
-    orig_params = [p.clone() for p in policy.parameters()]
-    dir_x = get_random_direction(policy, device)
-    dir_y = get_random_direction(policy, device)
+    orig_params = [p.detach().cpu().clone() for p in policy.parameters()]
+    dir_x = get_random_direction(policy)
+    dir_y = get_random_direction(policy)
     
     alphas = np.linspace(-range_val, range_val, n_points)
     betas = np.linspace(-range_val, range_val, n_points)
@@ -48,7 +49,8 @@ def compute_2d_landscape(
         for j, beta in enumerate(betas):
             # Shift parameters: theta = theta_0 + alpha*dx + beta*dy
             for p, p0, dx, dy in zip(policy.parameters(), orig_params, dir_x, dir_y):
-                p.copy_(p0 + alpha * dx + beta * dy)
+                shifted = p0 + alpha * dx + beta * dy
+                p.copy_(shifted.to(device=p.device, dtype=p.dtype, non_blocking=True))
             
             # Compute loss on a single batch (proxy for the whole landscape)
             # In a real run, we might want to average over several batches
@@ -57,6 +59,6 @@ def compute_2d_landscape(
             
     # Restore original parameters
     for p, p0 in zip(policy.parameters(), orig_params):
-        p.copy_(p0)
+        p.copy_(p0.to(device=p.device, dtype=p.dtype, non_blocking=True))
         
     return grid

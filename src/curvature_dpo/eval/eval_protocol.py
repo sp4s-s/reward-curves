@@ -28,6 +28,59 @@ def _model_device(model) -> str:
     return str(next(model.parameters()).device)
 
 
+def _eval_batch_size(cfg: Any) -> int:
+    data_cfg = getattr(cfg, "data", None)
+    requested = int(getattr(data_cfg, "eval_batch_size", 0) or 0)
+    if requested > 0:
+        return requested
+    return max(1, min(int(cfg.micro_batch_size), 2))
+
+
+def _loss_landscape_enabled(cfg: Any) -> bool:
+    eval_cfg = getattr(cfg, "evaluation", None)
+    return bool(getattr(eval_cfg, "enable_loss_landscape", False))
+
+
+def _loss_landscape_points(cfg: Any) -> int:
+    eval_cfg = getattr(cfg, "evaluation", None)
+    return max(3, int(getattr(eval_cfg, "loss_landscape_points", 5)))
+
+
+def _loss_landscape_range(cfg: Any) -> float:
+    eval_cfg = getattr(cfg, "evaluation", None)
+    return float(getattr(eval_cfg, "loss_landscape_range", 0.2))
+
+
+def _loss_landscape_min_free_gb(cfg: Any) -> float:
+    eval_cfg = getattr(cfg, "evaluation", None)
+    return float(getattr(eval_cfg, "loss_landscape_min_free_gb", 3.0))
+
+
+def _clear_cuda_memory() -> None:
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        if hasattr(torch.cuda, "ipc_collect"):
+            torch.cuda.ipc_collect()
+
+
+def _is_cuda_oom(exc: BaseException) -> bool:
+    if isinstance(exc, torch.OutOfMemoryError):
+        return True
+    message = str(exc).lower()
+    return "out of memory" in message or "cuda error" in message or "device-side assert" in message
+
+
+def _cuda_free_gb(device: str) -> float:
+    if not str(device).startswith("cuda") or not torch.cuda.is_available():
+        return float("inf")
+    free_bytes, _total_bytes = torch.cuda.mem_get_info(device)
+    return free_bytes / (1024 ** 3)
+
+
+def _slice_single_example(batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    return {key: value[:1].contiguous() for key, value in batch.items()}
+
+
 def run_checkpoint_eval(
     policy,
     reference_model,
@@ -41,6 +94,7 @@ def run_checkpoint_eval(
     device: str = "cuda",
 ) -> Dict[str, Any]:
     logger.info("Checkpoint eval at step %d", step)
+    _clear_cuda_memory()
     results = {"step": step, "timestamp": time.time()}
 
     pref_metrics = evaluate_preference_accuracy(policy, reference_model, tokenizer, eval_prefs_dataset, cfg, device)
@@ -63,29 +117,54 @@ def run_checkpoint_eval(
     tracker.log_artifact(f"swap_table_step_{step}", "eval_table", swap_path)
     tracker.log_artifact(f"generations_step_{step}", "eval_table", gen_path)
 
-    if step % (cfg.save_every * 4) == 0 or step == cfg.total_steps:
-        eval_batch = next(iter(create_eval_loader(eval_prefs_dataset, cfg)))
-
-        def _dpo_loss_fn(model, batch):
-            from curvature_dpo.training.functional import compute_logprobs, dpo_loss
-            with torch.no_grad():
-                chosen_lp = compute_logprobs(
-                    model(batch["chosen_input_ids"].to(device), attention_mask=batch["chosen_attention_mask"].to(device)).logits,
-                    batch["chosen_labels"].to(device),
+    if _loss_landscape_enabled(cfg) and (step % (cfg.save_every * 4) == 0 or step == cfg.total_steps):
+        try:
+            free_gb = _cuda_free_gb(device)
+            min_free_gb = _loss_landscape_min_free_gb(cfg)
+            if free_gb < min_free_gb:
+                logger.warning(
+                    "Skipping loss landscape at step %d because free GPU memory is %.2f GiB (< %.2f GiB).",
+                    step,
+                    free_gb,
+                    min_free_gb,
                 )
-                rejected_lp = compute_logprobs(
-                    model(batch["rejected_input_ids"].to(device), attention_mask=batch["rejected_attention_mask"].to(device)).logits,
-                    batch["rejected_labels"].to(device),
-                )
-            loss, _, _, _ = dpo_loss(chosen_lp, rejected_lp, chosen_lp.detach(), rejected_lp.detach(), beta=cfg.beta)
-            return loss
+                raise torch.OutOfMemoryError("Insufficient free memory for loss landscape")
+            eval_batch = next(iter(create_eval_loader(eval_prefs_dataset, cfg)))
+            eval_batch = _slice_single_example(eval_batch)
 
-        landscape_grid = compute_2d_landscape(policy, eval_batch, _dpo_loss_fn, n_points=11, range_val=0.5, device=device)
-        landscape_path = os.path.join(art_dir, f"landscape_step_{step}.npy")
-        np.save(landscape_path, landscape_grid)
-        tracker.log_artifact(f"landscape_step_{step}", "landscape", landscape_path)
+            def _dpo_loss_fn(model, batch):
+                from curvature_dpo.training.functional import compute_logprobs, dpo_loss
+                with torch.no_grad():
+                    chosen_lp = compute_logprobs(
+                        model(batch["chosen_input_ids"].to(device), attention_mask=batch["chosen_attention_mask"].to(device)).logits,
+                        batch["chosen_labels"].to(device),
+                    )
+                    rejected_lp = compute_logprobs(
+                        model(batch["rejected_input_ids"].to(device), attention_mask=batch["rejected_attention_mask"].to(device)).logits,
+                        batch["rejected_labels"].to(device),
+                    )
+                loss, _, _, _ = dpo_loss(chosen_lp, rejected_lp, chosen_lp.detach(), rejected_lp.detach(), beta=cfg.beta)
+                return loss
+
+            landscape_grid = compute_2d_landscape(
+                policy,
+                eval_batch,
+                _dpo_loss_fn,
+                n_points=_loss_landscape_points(cfg),
+                range_val=_loss_landscape_range(cfg),
+                device=device,
+            )
+            landscape_path = os.path.join(art_dir, f"landscape_step_{step}.npy")
+            np.save(landscape_path, landscape_grid)
+            tracker.log_artifact(f"landscape_step_{step}", "landscape", landscape_path)
+        except RuntimeError as exc:
+            if not _is_cuda_oom(exc):
+                raise
+            logger.warning("Skipping loss landscape at step %d due to CUDA memory pressure.", step)
+            _clear_cuda_memory()
 
     tracker.log(results, step=step)
+    _clear_cuda_memory()
     return results
 
 
@@ -200,26 +279,72 @@ def evaluate_overoptimization(
     from curvature_dpo.eval.generate import generate_completions
 
     prompts = [item["prompt"] for item in dataset]
-    completions = generate_completions(
-        policy,
-        tokenizer,
-        prompts,
-        max_new_tokens=cfg.data.max_response_tokens,
-        device=_model_device(policy),
-        batch_size=int(cfg.micro_batch_size),
-    )
+    if not prompts:
+        empty_df = pd.DataFrame(columns=["prompt", "completion", "r_implicit", "r_gold", "length"])
+        return {
+            "delta_raw": 0.0,
+            "goodhart_slope": 0.0,
+            "pearson": 0.0,
+            "spearman": 0.0,
+            "dist_1": 0.0,
+            "mean_length": 0.0,
+            "p99_length": 0.0,
+            "truncated_frac": 0.0,
+        }, empty_df
 
-    r_implicit = compute_implicit_rewards(
-        policy,
-        reference_model,
-        tokenizer,
-        prompts,
-        completions,
-        beta=cfg.beta,
-        device=_model_device(policy),
-        batch_size=int(cfg.micro_batch_size),
-    )
-    r_gold = gold_rm.score_batch(prompts, completions)
+    policy_device = _model_device(policy)
+    eval_batch_size = _eval_batch_size(cfg)
+    max_new_tokens = int(cfg.data.max_response_tokens)
+    rm_batch_size = int(getattr(cfg.data, "rm_batch_size", 8))
+
+    last_exc: RuntimeError | None = None
+    while True:
+        try:
+            _clear_cuda_memory()
+            completions = generate_completions(
+                policy,
+                tokenizer,
+                prompts,
+                max_new_tokens=max_new_tokens,
+                device=policy_device,
+                batch_size=eval_batch_size,
+            )
+
+            r_implicit = compute_implicit_rewards(
+                policy,
+                reference_model,
+                tokenizer,
+                prompts,
+                completions,
+                beta=cfg.beta,
+                device=policy_device,
+                batch_size=eval_batch_size,
+            )
+            r_gold = gold_rm.score_batch_chunked(
+                prompts,
+                completions,
+                batch_size=rm_batch_size,
+            )
+            break
+        except RuntimeError as exc:
+            if not _is_cuda_oom(exc):
+                raise
+            last_exc = exc
+            if eval_batch_size > 1:
+                eval_batch_size = max(1, eval_batch_size // 2)
+                logger.warning(
+                    "Eval generation hit CUDA memory pressure; retrying with eval_batch_size=%d.",
+                    eval_batch_size,
+                )
+            elif max_new_tokens > 64:
+                max_new_tokens = max(64, max_new_tokens // 2)
+                logger.warning(
+                    "Eval generation still memory-bound; retrying with max_new_tokens=%d.",
+                    max_new_tokens,
+                )
+            else:
+                raise last_exc
+            _clear_cuda_memory()
 
     lengths = [len(tokenizer.encode(c)) for c in completions]
     df = pd.DataFrame({

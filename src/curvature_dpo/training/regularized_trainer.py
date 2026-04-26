@@ -55,7 +55,7 @@ def train_curv_dpo(
     ref_device = ref_device or device
     dual_gpu = device != ref_device
 
-    gold_rm = GoldRewardModel(device=ref_device, bf16=cfg.model.bf16)
+    gold_rm = GoldRewardModel(device="cpu", bf16=False)
     probe_set = build_probe_set(probe_dataset, tokenizer)
 
     train_loader = create_train_loader(train_dataset, cfg)
@@ -224,6 +224,8 @@ def train_curv_dpo(
                     dashboard.maybe_update(optimizer_step)
 
                 if optimizer_step > 0 and optimizer_step % cfg.save_every == 0:
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
                     eval_results = run_checkpoint_eval(
                         policy, reference_model, tokenizer, gold_rm,
                         eval_prefs_dataset, eval_gen_dataset, probe_set,
@@ -238,6 +240,8 @@ def train_curv_dpo(
                 if prof is not None:
                     prof.step()
 
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     run_checkpoint_eval(
         policy, reference_model, tokenizer, gold_rm,
         eval_prefs_dataset, eval_gen_dataset, probe_set,
