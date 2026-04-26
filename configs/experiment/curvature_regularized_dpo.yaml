@@ -7,6 +7,14 @@ training:
   lr: 5e-7
   total_steps: 4000
   save_every: 250
+  # 2×T4 (15 GiB each): policy on cuda:0, reference on cuda:1.
+  # Effective batch = micro_batch_size × grad_accum = 4 × 4 = 16.
+  micro_batch_size: 4
+  grad_accum: 4
 
 curvature:
   lambda: 0.1
+  # 1 position × 1 swap = 1 extra policy forward per step.
+  # Increase after confirming memory headroom.
+  n_positions: 1
+  n_swaps: 1
