@@ -14,7 +14,7 @@ from dpocurv.training.runtime import (
     optimizer_step_ready,
 )
 from dpocurv.training.metrics import clone_trainable_params, parameter_norm, update_norm
-from dpocurv.utils.checkpoint import save_checkpoint
+from dpocurv.utils.checkpoint import CheckpointManager
 from dpocurv.utils.dashboard import DashboardWriter
 from dpocurv.utils.logging import get_logger, JsonlMetricWriter
 from dpocurv.utils.telemetry import GpuTelemetry, profiler_context
@@ -44,6 +44,14 @@ def train_sft(
     optimizer.zero_grad(set_to_none=True)
     optimizer_step = 0
     micro_step = 0
+    
+    ckpt_mgr = CheckpointManager(
+        cfg.out_dir,
+        keep_last_n=int(getattr(cfg, "keep_last_n", 2)),
+        keep_best=bool(getattr(cfg, "keep_best", True)),
+        mode="min",  # best = lowest loss for SFT
+    )
+    
     dashboard = DashboardWriter(cfg, logger)
     
     with (
@@ -102,10 +110,16 @@ def train_sft(
                     pbar.set_postfix({"loss": f"{metrics['loss']:.4f}"})
                 
                 if optimizer_step > 0 and optimizer_step % cfg.save_every == 0:
-                    save_checkpoint(model, tokenizer, optimizer, scheduler, optimizer_step, cfg.out_dir)
+                    ckpt_mgr.save(
+                        model, tokenizer, optimizer, scheduler,
+                        optimizer_step, score=raw_loss.item()
+                    )
                 if hasattr(prof, "step"):
                     prof.step()
                 
-    save_checkpoint(model, tokenizer, optimizer, scheduler, optimizer_step, cfg.out_dir)
+    ckpt_mgr.save(
+        model, tokenizer, optimizer, scheduler,
+        optimizer_step, score=raw_loss.item() if 'raw_loss' in locals() else None
+    )
     dashboard.maybe_update(optimizer_step, force=True)
     logger.info("SFT training complete.")
