@@ -34,6 +34,14 @@ def resolve_device(requested: str = "auto") -> str:
     return requested
 
 
+def device_index(device: str) -> int:
+    if not device.startswith("cuda"):
+        raise ValueError(f"device_index only supports CUDA devices, got {device!r}")
+    if ":" not in device:
+        return torch.cuda.current_device()
+    return int(device.split(":", 1)[1])
+
+
 def _torch_supports_capability(major: int, minor: int) -> bool:
     arch_list = getattr(torch.cuda, "get_arch_list", lambda: [])()
     if not arch_list:
@@ -52,7 +60,7 @@ def get_device_profile(
     if not resolved.startswith("cuda") or not torch.cuda.is_available():
         return DeviceProfile(resolved, "cpu", None, torch.float32, None, False, True)
 
-    idx = torch.cuda.current_device()
+    idx = device_index(resolved)
     major, minor = torch.cuda.get_device_capability(idx)
     name = torch.cuda.get_device_name(idx)
     supported = _torch_supports_capability(major, minor)
@@ -114,6 +122,7 @@ def gpu_topology_info() -> str:
 __all__ = [
     "DeviceProfile",
     "configure_torch_for_device",
+    "device_index",
     "get_device_profile",
     "gpu_topology_info",
     "resolve_device",

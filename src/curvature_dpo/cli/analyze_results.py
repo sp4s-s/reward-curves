@@ -15,6 +15,23 @@ from scipy import stats
 from curvature_dpo.utils.analysis import compute_correlations, compute_pareto_frontier, matched_pref_acc_comparison
 
 
+def _resolve_exp_dir(exp_dir: str | None) -> Path:
+    if exp_dir:
+        return Path(exp_dir).expanduser().resolve()
+
+    cwd = Path.cwd().resolve()
+    if (cwd / "train.jsonl").exists():
+        return cwd
+
+    runs_dir = cwd / "runs"
+    if runs_dir.exists():
+        candidates = sorted((p for p in runs_dir.rglob("*") if p.is_dir() and (p / "train.jsonl").exists()))
+        if candidates:
+            return candidates[-1]
+
+    raise ValueError("Could not infer experiment directory; pass --exp_dir /path/to/run")
+
+
 # ── Data loading ─────────────────────────────────────────────────────────────
 
 def load_run_metrics(run_dir: Path) -> pd.DataFrame:
@@ -155,11 +172,14 @@ def export_metrics_table(df: pd.DataFrame, out_path: Path) -> None:
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main(exp_dir: str) -> None:
-    exp_path = Path(exp_dir)
-    run_dirs = sorted(d for d in exp_path.iterdir() if d.is_dir())
-    if not run_dirs:
-        print(f"No run directories found in {exp_path}")
-        return
+    exp_path = _resolve_exp_dir(exp_dir)
+    if (exp_path / "train.jsonl").exists():
+        run_dirs = [exp_path]
+    else:
+        run_dirs = sorted(d for d in exp_path.iterdir() if d.is_dir())
+        if not run_dirs:
+            print(f"No run directories found in {exp_path}")
+            return
 
     all_dfs: List[pd.DataFrame] = []
     for rd in run_dirs:
@@ -203,6 +223,6 @@ def main(exp_dir: str) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--exp_dir", required=True, help="Path to the experiment output directory")
+    parser.add_argument("--exp_dir", nargs="?", default=None, help="Path to the experiment output directory")
     args = parser.parse_args()
     main(args.exp_dir)

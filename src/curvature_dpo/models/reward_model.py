@@ -22,7 +22,7 @@ class GoldRewardModel:
         self.device = profile.device
         self.model = AutoModelForSequenceClassification.from_pretrained(
             model_name,
-            torch_dtype=profile.dtype,
+            dtype=profile.dtype,
             trust_remote_code=True
         ).to(self.device)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)

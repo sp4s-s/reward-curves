@@ -55,7 +55,7 @@ def train_curv_dpo(
     ref_device = ref_device or device
     dual_gpu = device != ref_device
 
-    gold_rm = GoldRewardModel(device=device, bf16=cfg.model.bf16)
+    gold_rm = GoldRewardModel(device=ref_device, bf16=cfg.model.bf16)
     probe_set = build_probe_set(probe_dataset, tokenizer)
 
     train_loader = create_train_loader(train_dataset, cfg)

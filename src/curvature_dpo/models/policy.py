@@ -28,7 +28,7 @@ def load_policy(
     """
     profile = profile or get_device_profile(device, bf16, use_flash_attn)
     kwargs = {
-        "torch_dtype": profile.dtype,
+        "dtype": profile.dtype,
         "trust_remote_code": True,
     }
 

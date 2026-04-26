@@ -8,6 +8,10 @@ from typing import List, Dict, Any, Optional
 from curvature_dpo.types import ProbeItem, CurvatureSample
 
 
+def _model_device(model) -> str:
+    return str(next(model.parameters()).device)
+
+
 @torch.no_grad()
 def estimate_curvature(
     policy,
@@ -24,8 +28,10 @@ def estimate_curvature(
     Offline curvature estimator for a single probe item.
     Returns detailed swap information for the swap table.
     """
-    prompt_ids = torch.tensor(probe_item.prompt_ids, dtype=torch.long, device=device)
-    response_ids = torch.tensor(probe_item.response_ids, dtype=torch.long, device=device)
+    policy_device = _model_device(policy)
+    reference_device = _model_device(reference_model)
+    prompt_ids = torch.tensor(probe_item.prompt_ids, dtype=torch.long, device=policy_device)
+    response_ids = torch.tensor(probe_item.response_ids, dtype=torch.long, device=policy_device)
     
     full_ids = torch.cat([prompt_ids, response_ids])
     prompt_len = len(prompt_ids)
@@ -37,7 +43,7 @@ def estimate_curvature(
     def get_logp(ids):
         input_ids = ids.unsqueeze(0)
         logits = policy(input_ids).logits
-        ref_logits = reference_model(input_ids).logits
+        ref_logits = reference_model(input_ids.to(reference_device)).logits
         
         shift_logits = logits[:, prompt_len-1:-1, :].contiguous()
         shift_labels = input_ids[:, prompt_len:].contiguous()
@@ -46,7 +52,8 @@ def estimate_curvature(
         
         shift_ref_logits = ref_logits[:, prompt_len-1:-1, :].contiguous()
         ref_lp = F.log_softmax(shift_ref_logits, dim=-1)
-        ref_logp = torch.gather(ref_lp, dim=-1, index=shift_labels.unsqueeze(-1)).squeeze(-1).sum()
+        ref_labels = shift_labels.to(reference_device, non_blocking=True)
+        ref_logp = torch.gather(ref_lp, dim=-1, index=ref_labels.unsqueeze(-1)).squeeze(-1).sum().to(policy_device)
         
         return pi_logp, ref_logp
 
@@ -67,18 +74,16 @@ def estimate_curvature(
         if swap_distribution == "Q_topk":
             with torch.no_grad():
                 # Get logits at this position from reference model
-                ref_out = reference_model(full_ids[:abs_pos+1].unsqueeze(0)).logits
-                # logits for the NEXT token are at [0, -1, :] but wait,
-                # we want to swap the token AT abs_pos.
-                # So we need logits from prompt_ids + response_ids[:pos_idx]
                 prefix_ids = full_ids[:abs_pos]
-                ref_prefix_logits = reference_model(prefix_ids.unsqueeze(0)).logits
+                ref_prefix_logits = reference_model(prefix_ids.unsqueeze(0).to(reference_device)).logits
                 probs = F.softmax(ref_prefix_logits[0, -1, :], dim=-1)
                 k = min(50, probs.size(-1))
                 topk = torch.topk(probs, k)
                 indices = topk.indices.tolist()
                 # Exclude original token
                 indices = [idx for idx in indices if idx != orig_token]
+                if not indices:
+                    continue
                 swaps = [indices[i] for i in torch.randperm(len(indices))[:n_swaps]]
         elif swap_distribution == "Q_unif":
             swaps = torch.randint(0, tokenizer.vocab_size, (n_swaps,), device=device).tolist()
