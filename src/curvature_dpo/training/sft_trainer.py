@@ -6,19 +6,19 @@ from tqdm import tqdm
 from torch.optim import AdamW
 from transformers import get_cosine_schedule_with_warmup
 
-from dpocurv.training.runtime import (
+from curvature_dpo.training.runtime import (
     autocast_context,
     count_tokens,
     create_train_loader,
     move_batch,
     optimizer_step_ready,
 )
-from dpocurv.training.metrics import clone_trainable_params, parameter_norm, update_norm
-from dpocurv.utils.checkpoint import CheckpointManager
-from dpocurv.utils.dashboard import DashboardWriter
-from dpocurv.utils.logging import get_logger, JsonlMetricWriter
-from dpocurv.utils.telemetry import GpuTelemetry, profiler_context
-from dpocurv.utils.tracking import tracker
+from curvature_dpo.training.metrics import clone_trainable_params, parameter_norm, update_norm
+from curvature_dpo.utils.checkpoint import CheckpointManager
+from curvature_dpo.utils.dashboard import DashboardWriter
+from curvature_dpo.utils.logging import get_logger, JsonlMetricWriter
+from curvature_dpo.utils.telemetry import GpuTelemetry, profiler_context
+from curvature_dpo.utils.tracking import tracker
 
 
 def train_sft(
@@ -28,7 +28,7 @@ def train_sft(
     cfg,
     device="cuda"
 ):
-    logger = get_logger("dpocurv.sft")
+    logger = get_logger("curvature_dpo.sft")
     logger.info(f"Starting SFT training: {cfg.run_name}")
     
     train_loader = create_train_loader(train_dataset, cfg)

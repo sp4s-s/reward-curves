@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from typing import List
 from datasets import Dataset
-from dpocurv.types import ProbeItem
-from dpocurv.data.ultrafeedback import as_text, response_text
+from curvature_dpo.types import ProbeItem
+from curvature_dpo.data.ultrafeedback import as_text, response_text
 
 
 def build_probe_set(ds: Dataset, tokenizer=None) -> List[ProbeItem]:

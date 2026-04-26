@@ -1,5 +1,5 @@
 # Master seed registry. All stochastic processes derive from these via
-# dpocurv.utils.seed.derive_seed(master, *salts).
+# curvature_dpo.utils.seed.derive_seed(master, *salts).
 seeds:
   - 20260425
   - 20260426

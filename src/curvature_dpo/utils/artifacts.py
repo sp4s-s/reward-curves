@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from dpocurv.utils.dashboard import write_dashboard
+from curvature_dpo.utils.dashboard import write_dashboard
 
 
 def _read_last_jsonl(path: Path) -> dict[str, Any]:

@@ -1,13 +1,13 @@
 import torch
-import dpocurv
-from dpocurv.utils.seed import set_seed
-from dpocurv.data.splits import get_splits
-from dpocurv.models.policy import load_policy
-from dpocurv.training.losses import dpo_loss, curvature_loss
+import curvature_dpo
+from curvature_dpo.utils.seed import set_seed
+from curvature_dpo.data.splits import get_splits
+from curvature_dpo.models.policy import load_policy
+from curvature_dpo.training.losses import dpo_loss, curvature_loss
 
 def test_imports():
-    print(f"dpocurv version: {dpocurv.__version__}")
-    assert dpocurv.__version__ == "0.1.0"
+    print(f"curvature_dpo version: {curvature_dpo.__version__}")
+    assert curvature_dpo.__version__ == "0.1.0"
 
 def test_cuda():
     if torch.cuda.is_available():

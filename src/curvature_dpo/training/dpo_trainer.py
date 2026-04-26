@@ -1,4 +1,4 @@
-"""Curvature-Regularized DPO Trainer."""
+"""DPO Trainer implementation."""
 from __future__ import annotations
 
 import torch
@@ -6,29 +6,28 @@ from tqdm import tqdm
 from torch.optim import AdamW
 from transformers import get_cosine_schedule_with_warmup
 
-from dpocurv.training.losses import compute_logprobs, dpo_loss, curvature_loss
-from dpocurv.training.runtime import (
+from curvature_dpo.training.losses import compute_logprobs, dpo_loss
+from curvature_dpo.training.runtime import (
     autocast_context,
     count_tokens,
     create_train_loader,
     move_batch,
     optimizer_step_ready,
 )
-from dpocurv.training.metrics import (
+from curvature_dpo.training.metrics import (
     clone_trainable_params,
     dpo_batch_metrics,
-    gradient_cosine,
     parameter_norm,
     update_norm,
 )
-from dpocurv.utils.checkpoint import CheckpointManager, load_checkpoint
-from dpocurv.utils.dashboard import DashboardWriter
-from dpocurv.utils.logging import get_logger, JsonlMetricWriter
-from dpocurv.utils.telemetry import GpuTelemetry, profiler_context
-from dpocurv.utils.tracking import tracker
+from curvature_dpo.utils.checkpoint import CheckpointManager, load_checkpoint
+from curvature_dpo.utils.dashboard import DashboardWriter
+from curvature_dpo.utils.logging import get_logger, JsonlMetricWriter
+from curvature_dpo.utils.telemetry import GpuTelemetry, profiler_context
+from curvature_dpo.utils.tracking import tracker
 
 
-def train_curv_dpo(
+def train_dpo(
     policy,
     reference_model,
     tokenizer,
@@ -38,8 +37,8 @@ def train_curv_dpo(
     ref_device: str | None = None,
     resume_ckpt=None,
 ):
-    logger = get_logger("dpocurv.curv_dpo")
-    logger.info(f"Starting Curvature-Regularized DPO: {cfg.run_name} (lambda={cfg.curv_lambda})")
+    logger = get_logger("curvature_dpo.dpo")
+    logger.info(f"Starting DPO training: {cfg.run_name}")
     ref_device = ref_device or device
     if ref_device != device:
         logger.info(f"Model-parallel split: policy={device}, reference={ref_device}")
@@ -53,7 +52,6 @@ def train_curv_dpo(
         num_training_steps=total_optimizer_steps,
     )
 
-    # Restore from checkpoint if resuming
     optimizer_step = 0
     if resume_ckpt is not None:
         optimizer_step = load_checkpoint(optimizer, scheduler, resume_ckpt)
@@ -64,7 +62,7 @@ def train_curv_dpo(
         cfg.out_dir,
         keep_last_n=int(getattr(cfg, "keep_last_n", 2)),
         keep_best=bool(getattr(cfg, "keep_best", True)),
-        mode="max",  # best = highest reward_acc
+        mode="max",
     )
 
     policy.train()
@@ -77,7 +75,7 @@ def train_curv_dpo(
         JsonlMetricWriter(f"{cfg.out_dir}/train.jsonl") as writer,
         profiler_context(cfg, cfg.out_dir) as prof,
     ):
-        pbar = tqdm(total=total_optimizer_steps, desc="Curv-DPO", initial=optimizer_step)
+        pbar = tqdm(total=total_optimizer_steps, desc="DPO", initial=optimizer_step)
         
         while optimizer_step < total_optimizer_steps:
             for batch in train_loader:
@@ -89,7 +87,6 @@ def train_curv_dpo(
                 
                 with autocast_context(policy, device):
                     with torch.no_grad():
-                        # Route reference forwards through ref_device (cuda:1 if 2xT4)
                         ref_chosen_logits = reference_model(
                             input_ids=batch["chosen_input_ids"].to(ref_device),
                             attention_mask=batch["chosen_attention_mask"].to(ref_device),
@@ -98,7 +95,7 @@ def train_curv_dpo(
                             ref_chosen_logits,
                             batch["chosen_labels"].to(ref_device),
                         ).to(device)
-                        # Keep ref_chosen_logits on ref_device for curvature swap sampling
+                        del ref_chosen_logits
 
                         ref_rejected_logits = reference_model(
                             input_ids=batch["rejected_input_ids"].to(ref_device),
@@ -115,7 +112,6 @@ def train_curv_dpo(
                         attention_mask=batch["chosen_attention_mask"],
                     ).logits
                     policy_chosen_logps = compute_logprobs(policy_chosen_logits, batch["chosen_labels"])
-                    # Free memory immediately
                     del policy_chosen_logits
 
                     policy_rejected_logits = policy(
@@ -123,54 +119,25 @@ def train_curv_dpo(
                         attention_mask=batch["rejected_attention_mask"],
                     ).logits
                     policy_rejected_logps = compute_logprobs(policy_rejected_logits, batch["rejected_labels"])
-                    # Free memory immediately
                     del policy_rejected_logits
                     
-                    l_dpo, c_rew, r_rew, acc = dpo_loss(
+                    raw_loss, c_rew, r_rew, acc = dpo_loss(
                         policy_chosen_logps,
                         policy_rejected_logps,
                         ref_chosen_logps,
                         ref_rejected_logps,
                         beta=cfg.beta,
                     )
-                    
-                    l_curv = curvature_loss(
-                        policy,
-                        reference_model,
-                        batch["chosen_input_ids"],
-                        batch["chosen_labels"],
-                        pi_logps_base=policy_chosen_logps,
-                        ref_logps_base=ref_chosen_logps,
-                        ref_logits=ref_chosen_logits,
-                        beta=cfg.beta,
-                        n_positions=cfg.curv_n_positions,
-                        n_swaps=cfg.curv_n_swaps,
-                        swap_topk=cfg.curv_swap_topk,
-                        device=device,
-                        ref_device=ref_device,
-                    )
-                    # Free the final logits tensor
-                    del ref_chosen_logits
-
-                    raw_loss = l_dpo + cfg.curv_lambda * l_curv
                     loss = raw_loss / cfg.grad_accum
 
-                next_micro_step = micro_step + 1
-                will_update = optimizer_step_ready(next_micro_step, int(cfg.grad_accum))
-                next_step = optimizer_step + 1 if will_update else optimizer_step
-                will_log = will_update and (next_step == 1 or next_step % cfg.log_every == 0)
-                grad_cos = (
-                    gradient_cosine(l_dpo, l_curv, policy)
-                    if will_log and cfg.diagnostics.grad_cosine
-                    else None
-                )
-
                 loss.backward()
-                micro_step = next_micro_step
+                micro_step += 1
                 
                 if not optimizer_step_ready(micro_step, int(cfg.grad_accum)):
                     continue
 
+                next_step = optimizer_step + 1
+                will_log = next_step == 1 or next_step % cfg.log_every == 0
                 before_params = clone_trainable_params(policy) if will_log and cfg.diagnostics.exact_update_norm else None
                 pre_clip_grad_norm = torch.nn.utils.clip_grad_norm_(policy.parameters(), cfg.grad_clip)
                 optimizer.step()
@@ -195,9 +162,7 @@ def train_curv_dpo(
                         "epoch": float(micro_step / max(len(train_loader), 1)),
                         "micro_step": micro_step,
                         "loss": raw_loss.item(),
-                        "l_dpo": l_dpo.item(),
-                        "l_curv": l_curv.item(),
-                        "grad_cosine/dpo_curv": grad_cos,
+                        "l_dpo": raw_loss.item(),
                         "reward_acc": acc.item(),
                         "accuracy": acc.item(),
                         "error_rate": 1.0 - acc.item(),
@@ -217,10 +182,7 @@ def train_curv_dpo(
                     telemetry.print_summary(metrics)
                     tracker.log(metrics, step=optimizer_step)
                     dashboard.maybe_update(optimizer_step)
-                    pbar.set_postfix({
-                        "acc": f"{metrics['reward_acc']:.2f}", 
-                        "l_curv": f"{metrics['l_curv']:.4f}"
-                    })
+                    pbar.set_postfix({"acc": f"{metrics['reward_acc']:.2f}", "loss": f"{metrics['loss']:.4f}"})
                 
                 if optimizer_step > 0 and optimizer_step % cfg.save_every == 0:
                     ckpt_mgr.save(
@@ -235,5 +197,4 @@ def train_curv_dpo(
         optimizer_step, score=metrics.get("reward_acc") if 'metrics' in locals() else None
     )
     dashboard.maybe_update(optimizer_step, force=True)
-    logger.info("Curv-DPO training complete.")
-
+    logger.info("DPO training complete.")

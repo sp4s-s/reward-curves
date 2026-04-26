@@ -4,7 +4,7 @@ from __future__ import annotations
 import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-from dpocurv.utils.device import get_device_profile
+from curvature_dpo.utils.device import get_device_profile
 
 
 class GoldRewardModel:

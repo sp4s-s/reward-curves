@@ -36,6 +36,21 @@ class Tracker:
         if self.enabled and self._wandb is not None:
             self._wandb.log(metrics, step=step)
 
+    def save_file(self, path: str) -> None:
+        """Uploads a file to the WandB run."""
+        if self.enabled and self._wandb is not None:
+            self._wandb.save(path)
+
+    def log_artifact(self, name: str, type: str, path: str, description: str | None = None) -> None:
+        """Logs a large file or directory as a WandB Artifact."""
+        if self.enabled and self._wandb is not None:
+            artifact = self._wandb.Artifact(name=name, type=type, description=description)
+            if os.path.isdir(path):
+                artifact.add_dir(path)
+            else:
+                artifact.add_file(path)
+            self._wandb.log_artifact(artifact)
+
     def finish(self) -> None:
         if self.enabled and self._wandb is not None:
             self._wandb.finish()

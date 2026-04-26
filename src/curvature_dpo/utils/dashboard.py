@@ -95,7 +95,7 @@ def write_dashboard(out_dir: str | Path, filename: str = "run_dashboard.html") -
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>dpocurv run dashboard - {title}</title>
+  <title>curvature_dpo run dashboard - {title}</title>
   <style>
     :root {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #111827; background: #f8fafc; }}
     body {{ margin: 0; }}
@@ -122,7 +122,7 @@ def write_dashboard(out_dir: str | Path, filename: str = "run_dashboard.html") -
 </head>
 <body>
 <header>
-  <h1>dpocurv Run Dashboard</h1>
+  <h1>curvature_dpo Run Dashboard</h1>
   <div class="sub">{title}</div>
 </header>
 <main>

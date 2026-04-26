@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import numpy as np
 from datasets import Dataset, load_dataset
-from dpocurv.utils.seed import make_rng
+from curvature_dpo.utils.seed import make_rng
 
 
 def get_splits(

@@ -4,7 +4,7 @@ from __future__ import annotations
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from dpocurv.utils.device import DeviceProfile, get_device_profile
+from curvature_dpo.utils.device import DeviceProfile, get_device_profile
 
 
 def reference_device() -> str:

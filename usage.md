@@ -29,26 +29,26 @@ The system automatically saves results in the `runs/` directory with a timestamp
 ### Step 1: SFT Baseline
 Trains the reference policy `π_ref`.
 ```bash
-python src/dpocurv/cli/main.py experiment=sft
+python src/curvature_dpo/cli/main.py experiment=sft
 ```
 
 ### Step 2: DPO Baseline
 Trains a policy with standard DPO loss.
 ```bash
-python src/dpocurv/cli/main.py experiment=dpo_baseline paths.sft_checkpoint=/path/to/sft/step-000250
+python src/curvature_dpo/cli/main.py experiment=dpo_baseline paths.sft_checkpoint=/path/to/sft/step-000250
 ```
 
 ### Step 3: Curvature-Regularized DPO
 Trains a policy with the curvature penalty.
 ```bash
-python src/dpocurv/cli/main.py experiment=dpo_curv paths.sft_checkpoint=/path/to/sft/step-000250 curvature.lambda=0.1
+python src/curvature_dpo/cli/main.py experiment=dpo_curv paths.sft_checkpoint=/path/to/sft/step-000250 curvature.lambda=0.1
 ```
 
 Kaggle-friendly single command:
 ```bash
-python src/dpocurv/cli/main.py experiment=dpo_curv wandb.enabled=false
+python src/curvature_dpo/cli/main.py experiment=dpo_curv wandb.enabled=false
 
-!python src/dpocurv/cli/main.py experiment=dpo_curv profiler.enabled=true wandb.enabled=false
+!python src/curvature_dpo/cli/main.py experiment=dpo_curv profiler.enabled=true wandb.enabled=false
 ```
 
 If Kaggle assigns a P100 and PyTorch reports `sm_60` is unsupported, first run:
@@ -59,7 +59,7 @@ Then rerun the training command in the next cell/process.
 
 With W&B:
 ```bash
-python src/dpocurv/cli/main.py experiment=dpo_curv wandb.enabled=true
+python src/curvature_dpo/cli/main.py experiment=dpo_curv wandb.enabled=true
 ```
 
 
@@ -85,7 +85,7 @@ Every run generates an output directory: `runs/YYYY-MM-DD/HH-MM-SS_<experiment_n
 
 To analyze checkpoints from a completed run:
 ```bash
-# This is typically called via a script in src/dpocurv/cli/eval_all.py (TBD)
+# This is typically called via a script in src/curvature_dpo/cli/eval_all.py (TBD)
 ```
 
 ## 6. Performance Optimization

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare Kaggle GPU runtimes for dpocurv."""
+"""Prepare Kaggle GPU runtimes for curvature_dpo."""
 from __future__ import annotations
 
 import argparse
@@ -49,7 +49,7 @@ def main() -> int:
     if cap == (6, 0):
         print("Detected P100/sm_60. Recommended Kaggle fix:")
         print("  !python scripts/kaggle_prepare_gpu.py --install")
-        print("  !python src/dpocurv/cli/main.py experiment=dpo_curv wandb.enabled=false")
+        print("  !python src/curvature_dpo/cli/main.py experiment=dpo_curv wandb.enabled=false")
         if args.install:
             cmd = [sys.executable, "-m", "pip", "install", "--force-reinstall", *P100_TORCH]
             print("\nRunning:", " ".join(cmd))

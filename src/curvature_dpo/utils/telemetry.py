@@ -9,7 +9,7 @@ from typing import Any
 
 import torch
 
-from dpocurv.utils.logging import JsonlMetricWriter
+from curvature_dpo.utils.logging import JsonlMetricWriter
 
 
 class NvmlProbe:

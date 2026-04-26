@@ -5,18 +5,18 @@ import hydra
 from pathlib import Path
 from omegaconf import DictConfig, open_dict
 
-from dpocurv.data.ultrafeedback import as_text, response_text, tokenize_dpo_pair, tokenize_sft_item
-from dpocurv.data.splits import get_splits
-from dpocurv.models.policy import load_policy, reference_device
-from dpocurv.training.curv_dpo_trainer import train_curv_dpo
-from dpocurv.training.dpo_trainer import train_dpo
-from dpocurv.training.sft_trainer import train_sft
-from dpocurv.utils.artifacts import finalize_run_artifacts, write_error_record, write_run_meta
-from dpocurv.utils.checkpoint import find_resume_checkpoint
-from dpocurv.utils.device import configure_torch_for_device, get_device_profile, gpu_topology_info
-from dpocurv.utils.logging import get_logger
-from dpocurv.utils.seed import set_seed
-from dpocurv.utils.tracking import tracker
+from curvature_dpo.data.ultrafeedback import as_text, response_text, tokenize_dpo_pair, tokenize_sft_item
+from curvature_dpo.data.splits import get_splits
+from curvature_dpo.models.policy import load_policy, reference_device
+from curvature_dpo.training.curv_dpo_trainer import train_curv_dpo
+from curvature_dpo.training.dpo_trainer import train_dpo
+from curvature_dpo.training.sft_trainer import train_sft
+from curvature_dpo.utils.artifacts import finalize_run_artifacts, write_error_record, write_run_meta
+from curvature_dpo.utils.checkpoint import find_resume_checkpoint
+from curvature_dpo.utils.device import configure_torch_for_device, get_device_profile, gpu_topology_info
+from curvature_dpo.utils.logging import get_logger
+from curvature_dpo.utils.seed import set_seed
+from curvature_dpo.utils.tracking import tracker
 
 
 def _flatten_runtime_cfg(cfg: DictConfig, out_dir: Path, device: str) -> None:
@@ -96,7 +96,7 @@ def main(cfg: DictConfig):
     # Setup paths and logger
     out_dir = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir)
 
-    logger = get_logger("dpocurv.main", log_file=out_dir / "run.log")
+    logger = get_logger("curvature_dpo.main", log_file=out_dir / "run.log")
     _validate_cfg(cfg)
     profile = get_device_profile(
         cfg.device,
@@ -215,6 +215,9 @@ def main(cfg: DictConfig):
                 reference_model,
                 tokenizer,
                 _tokenize_split(splits["dpo"], tokenizer, cfg, stage),
+                splits["test"], # eval_prefs
+                splits["oracle"], # eval_gen
+                splits["probe"], # probe_dataset
                 cfg,
                 device=cfg.device,
                 ref_device=ref_dev,

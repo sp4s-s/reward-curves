@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional
 
 
 def get_logger(
-    name: str = "dpocurv",
+    name: str = "curvature_dpo",
     log_file: Optional[str | Path] = None,
     level: int = logging.INFO,
 ) -> logging.Logger:
